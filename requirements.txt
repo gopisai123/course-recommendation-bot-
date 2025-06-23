@@ -5,3 +5,4 @@ sentence-transformers
 pandas
 huggingface_hub
 python-dotenv
+langchain-community 
