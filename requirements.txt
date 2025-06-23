@@ -1,1 +1,7 @@
-huggingface_hub==0.25.2
+gradio
+langchain
+chromadb
+sentence-transformers
+pandas
+huggingface_hub
+python-dotenv
