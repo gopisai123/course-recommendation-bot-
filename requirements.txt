@@ -6,4 +6,5 @@ pandas>=2.0.0
 huggingface_hub>=0.22.0
 python-dotenv>=1.0.0
 langchain-community==0.0.56
+datasets>=2.0.0
 requests
