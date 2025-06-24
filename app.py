@@ -65,69 +65,129 @@
 
 
 import gradio as gr
-from langchain.vectorstores import Chroma
-from langchain.embeddings import HuggingFaceEmbeddings
-from langchain.chains import RetrievalQA
-from langchain.llms import HuggingFaceHub
 import pandas as pd
 import os
+import json
+from langchain_community.vectorstores import Chroma
+from langchain_community.embeddings import HuggingFaceEmbeddings
+from langchain_community.llms import HuggingFaceHub
+from langchain.chains import RetrievalQA
+from huggingface_hub import login
+
+# Initialize HF token
+login(token=os.getenv("HUGGINGFACEHUB_API_TOKEN"))
 
 # Initialize embedding model
 embeddings = HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
 
-# Course database loader
 def load_course_db():
     try:
         df = pd.read_csv("courses.csv")
-        texts = [f"{row.title}: {row.description} | Level: {row.level}" for _, row in df.iterrows()]
+        # Create combined text for embeddings
+        texts = [
+            f"{row.title}: {row.description} | Skills: {row.skills} | Level: {row.level}"
+            for _, row in df.iterrows()
+        ]
         return Chroma.from_texts(texts, embeddings, collection_name="courses"), df
-    except:
+    except Exception as e:
+        print(f"Error loading courses: {str(e)}")
         # Fallback to sample data
         sample_courses = [
-            {"title": "Python Fundamentals", "description": "Learn core programming", "level": "Beginner", "url": "https://example.com/python"},
-            {"title": "Machine Learning", "description": "Deep learning techniques", "level": "Intermediate", "url": "https://example.com/ml"}
+            {"title": "Python Fundamentals", "description": "Learn core programming", 
+             "skills": "Python, Algorithms", "level": "Beginner", "url": "https://example.com/python"},
+            {"title": "Machine Learning", "description": "Deep learning techniques", 
+             "skills": "ML, Statistics", "level": "Intermediate", "url": "https://example.com/ml"}
         ]
         df = pd.DataFrame(sample_courses)
         texts = [f"{row.title}: {row.description} | Level: {row.level}" for _, row in df.iterrows()]
         return Chroma.from_texts(texts, embeddings, collection_name="courses"), df
 
-# Initialize components
 vector_db, course_df = load_course_db()
-llm = HuggingFaceHub(repo_id="google/flan-t5-xxl", model_kwargs={"temperature":0.5, "max_length":512})
 
-# Recommendation engine
+# Initialize LLM with API token
+llm = HuggingFaceHub(
+    repo_id="mistralai/Mixtral-8x7B-Instruct-v0.1",
+    model_kwargs={"temperature":0.5, "max_length":1024},
+    huggingfacehub_api_token=os.getenv("HUGGINGFACEHUB_API_TOKEN")
+)
+
 def recommend_courses(query):
-    qa = RetrievalQA.from_chain_type(
-        llm=llm,
-        chain_type="stuff",
-        retriever=vector_db.as_retriever(search_kwargs={"k": 3})
-    )
-    
-    prompt = f"""
-    Based on user background: {query}
-    Recommend courses with:
-    - Title and justification
-    - Difficulty level
-    - Direct URL
-    Format as JSON list
-    """
-    
-    return qa.run(prompt)
+    try:
+        qa = RetrievalQA.from_chain_type(
+            llm=llm,
+            chain_type="stuff",
+            retriever=vector_db.as_retriever(search_kwargs={"k": 3})
+        )
+        
+        prompt = f"""
+        Based on user background: "{query}"
+        Recommend 3 courses with:
+        - Title
+        - Reason: Brief justification
+        - Skills: Comma-separated list
+        - Level: Beginner/Intermediate/Advanced
+        - URL: Direct link
+        Format as JSON list
+        Example: [{{"title": "...", "reason": "...", "skills": "...", "level": "...", "url": "..."}}]
+        """
+        
+        response = qa.run(prompt)
+        # Attempt to parse JSON
+        try:
+            return json.loads(response)
+        except:
+            return response
+    except Exception as e:
+        return {"error": str(e)}
 
-# Gradio interface
-with gr.Blocks(theme=gr.themes.Soft()) as demo:
-    gr.Markdown("# 🎓 Course Recommendation Bot")
+def generate_learning_path(recommendations):
+    try:
+        qa = RetrievalQA.from_chain_type(
+            llm=llm,
+            chain_type="stuff",
+            retriever=vector_db.as_retriever()
+        )
+        
+        prompt = f"""
+        Based on these courses: {recommendations}
+        Create a 3-month learning path with:
+        - Weekly milestones
+        - Project suggestions
+        - Skill validation metrics
+        Format as JSON with keys: weeks, projects, metrics
+        """
+        
+        return qa.run(prompt)
+    except Exception as e:
+        return {"error": str(e)}
+
+with gr.Blocks(theme=gr.themes.Soft(), title="Course Recommendation Bot") as demo:
+    gr.Markdown("# 🎓 Smart Course Advisor")
     
     with gr.Row():
-        user_input = gr.Textbox(label="Your background/goals", placeholder="e.g., 'CS student interested in AI'")
-        submit_btn = gr.Button("Get Recommendations")
+        with gr.Column():
+            gr.Markdown("## Get Course Recommendations")
+            background = gr.Textbox(label="Your background/goals", 
+                                   placeholder="e.g., 'CS student interested in AI'")
+            rec_btn = gr.Button("Get Recommendations", variant="primary")
+            rec_output = gr.JSON(label="Recommended Courses")
+        
+        with gr.Column():
+            gr.Markdown("## Generate Learning Path")
+            path_input = gr.Textbox(label="Based on these courses (comma separated or JSON)")
+            path_btn = gr.Button("Create Learning Path", variant="primary")
+            path_output = gr.JSON(label="Learning Plan")
     
-    output = gr.JSON(label="Recommended Courses")
-    
-    submit_btn.click(
+    rec_btn.click(
         fn=recommend_courses,
-        inputs=user_input,
-        outputs=output
+        inputs=background,
+        outputs=rec_output
+    )
+    
+    path_btn.click(
+        fn=generate_learning_path,
+        inputs=path_input,
+        outputs=path_output
     )
 
-demo.launch()
+demo.launch(share=True)
