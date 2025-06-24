@@ -60,16 +60,15 @@ def load_course_db():
 vector_db, course_df = load_course_db()
 
 # Initialize LLM with endpoint URL
+# Initialize LLM with endpoint URL - FIXED
 llm = HuggingFaceEndpoint(
     endpoint_url="https://api-inference.huggingface.co/models/mistralai/Mixtral-8x7B-Instruct-v0.1",
     task="text-generation",
-    model_kwargs={
-        "temperature": 0.5,
-        "max_length": 1024,
-        "max_new_tokens": 512
-    },
+    temperature=0.5,  # Moved out of model_kwargs
+    max_new_tokens=512,  # Moved out of model_kwargs
     huggingfacehub_api_token=os.getenv("HUGGINGFACEHUB_API_TOKEN")
 )
+
 
 def recommend_courses(query):
     try:
