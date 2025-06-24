@@ -6,6 +6,3 @@ pandas
 huggingface_hub
 python-dotenv
 langchain-community
-langchain-huggingface
-datasets
-requests
