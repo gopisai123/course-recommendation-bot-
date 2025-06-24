@@ -16,37 +16,24 @@ embeddings = HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-
 
 def load_course_db():
     try:
-        # Try loading from local CSV first
+        # Load course data from CSV
         df = pd.read_csv("courses.csv")
         print(f"Loaded CSV with columns: {df.columns.tolist()}")
         
-        # Check what columns actually exist and adapt
-        if 'title' in df.columns:
-            title_col = 'title'
-        elif 'course_title' in df.columns:
-            title_col = 'course_title'
-        elif 'name' in df.columns:
-            title_col = 'name'
-        else:
-            title_col = df.columns[0]  # Use first column as title
-            
-        if 'description' in df.columns:
-            desc_col = 'description'
-        elif 'course_description' in df.columns:
-            desc_col = 'course_description'
-        elif 'summary' in df.columns:
-            desc_col = 'summary'
-        else:
-            desc_col = df.columns[1] if len(df.columns) > 1 else title_col
-        
-        # Create texts for embedding
+        # Create texts for embedding using available columns
         texts = []
         for _, row in df.iterrows():
-            text = f"{row[title_col]}: {row[desc_col]}"
-            if 'level' in df.columns:
-                text += f" | Level: {row['level']}"
-            if 'subject' in df.columns:
-                text += f" | Subject: {row['subject']}"
+            # Title column
+            title = row.get('title') or row.get('course_title') or row.get('name') or "Untitled Course"
+            
+            # Description column
+            description = row.get('description') or row.get('course_description') or row.get('summary') or "No description available"
+            
+            # Additional metadata
+            level = row.get('Level') or row.get('level') or "Not specified"
+            subject = row.get('subject') or "General"
+            
+            text = f"{title}: {description} | Level: {level} | Subject: {subject}"
             texts.append(text)
             
         return Chroma.from_texts(texts, embeddings), df
@@ -72,11 +59,15 @@ def load_course_db():
 
 vector_db, course_df = load_course_db()
 
-# Initialize LLM
+# Initialize LLM with endpoint URL
 llm = HuggingFaceEndpoint(
-    repo_id="mistralai/Mixtral-8x7B-Instruct-v0.1",
+    endpoint_url="https://api-inference.huggingface.co/models/mistralai/Mixtral-8x7B-Instruct-v0.1",
     task="text-generation",
-    model_kwargs={"temperature":0.5, "max_length":1024},
+    model_kwargs={
+        "temperature": 0.5,
+        "max_length": 1024,
+        "max_new_tokens": 512
+    },
     huggingfacehub_api_token=os.getenv("HUGGINGFACEHUB_API_TOKEN")
 )
 
@@ -89,43 +80,41 @@ def recommend_courses(query):
         )
         
         prompt = f"""
-        Based on user query: "{query}"
-        Recommend 3 relevant courses with:
+        Based on user background: "{query}"
+        Recommend 3 courses with:
         - Title
-        - Brief reason
+        - Reason: Brief justification
         - Difficulty level
-        - URL
-        Format as JSON: [{{"title": "...", "reason": "...", "level": "...", "url": "..."}}]
+        - Direct URL
+        Format as JSON list: [{{"title": "...", "reason": "...", "level": "...", "url": "..."}}]
         """
         
-        # Use invoke instead of run
+        # Get response from LLM
         result = qa.invoke({"query": prompt})
         response = result["result"]
         
-        # Try to parse as JSON, fallback to text
+        # Try to parse JSON, fallback to raw text
         try:
             return json.loads(response)
-        except:
-            # Create structured response from text
-            return {
-                "recommendations": response,
-                "note": "Generated response (parsing as JSON failed)"
-            }
+        except json.JSONDecodeError:
+            return {"recommendations": response, "note": "Response format invalid"}
             
     except Exception as e:
         return {"error": f"Recommendation failed: {str(e)}"}
 
 def generate_learning_path(recommendations):
     try:
-        if not recommendations or recommendations.strip() == "":
+        if not recommendations or not recommendations.strip():
             return {"error": "Please provide course names"}
             
         prompt = f"""
-        Create a 3-month learning plan for: {recommendations}
+        Create a 3-month learning plan for these courses: {recommendations}
         Include:
-        - Weekly goals
-        - Projects
+        - Weekly milestones
+        - Project suggestions
         - Skills to develop
+        - Estimated time commitment
+        Format response as a structured JSON object
         """
         
         qa = RetrievalQA.from_chain_type(
@@ -142,27 +131,28 @@ def generate_learning_path(recommendations):
 
 # Gradio interface
 with gr.Blocks(theme=gr.themes.Soft(), title="Course Recommendation Bot") as demo:
-    gr.Markdown("# 🎓 Comprehensive Course Advisor")
+    gr.Markdown("# 🎓 Smart Course Advisor")
     
     with gr.Row():
         with gr.Column():
-            gr.Markdown("### Get Personalized Recommendations")
+            gr.Markdown("### Get Course Recommendations")
             background = gr.Textbox(
-                label="Describe your background/goals", 
-                placeholder="e.g., 'High school graduate interested in AI'",
-                value="high school graduate interested in AI"
+                label="Your background/goals", 
+                placeholder="e.g., 'CS student interested in AI'",
+                lines=2
             )
-            rec_btn = gr.Button("Find My Courses", variant="primary")
+            rec_btn = gr.Button("Get Recommendations", variant="primary")
             rec_output = gr.JSON(label="Recommended Courses")
         
         with gr.Column():
-            gr.Markdown("### Generate Learning Path")
+            gr.Markdown("### Create Learning Path")
+            gr.Markdown("Enter course names from recommendations")
             path_input = gr.Textbox(
-                label="Based on these courses (comma separated)",
-                placeholder="e.g., 'Python, Machine Learning, Data Science'"
+                label="Courses (comma separated)",
+                placeholder="e.g., Python, Machine Learning"
             )
-            path_btn = gr.Button("Build Learning Path", variant="primary")
-            path_output = gr.JSON(label="Personalized Learning Plan")
+            path_btn = gr.Button("Generate Learning Path", variant="primary")
+            path_output = gr.JSON(label="Personalized Plan")
     
     rec_btn.click(
         fn=recommend_courses,
@@ -176,4 +166,5 @@ with gr.Blocks(theme=gr.themes.Soft(), title="Course Recommendation Bot") as dem
         outputs=path_output
     )
 
-demo.launch()
+if __name__ == "__main__":
+    demo.launch(share=True)
