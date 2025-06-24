@@ -3,8 +3,8 @@ import pandas as pd
 import os
 import json
 from langchain_community.vectorstores import Chroma
-from langchain_community.embeddings import HuggingFaceEmbeddings
-from langchain_community.llms import HuggingFaceHub
+from langchain_huggingface.embeddings import HuggingFaceEmbeddings
+from langchain_huggingface.llms import HuggingFaceEndpoint
 from langchain.chains import RetrievalQA
 from huggingface_hub import login
 
@@ -73,9 +73,10 @@ def load_course_db():
 vector_db, course_df = load_course_db()
 
 # Initialize LLM
-llm = HuggingFaceHub(
-    repo_id="microsoft/DialoGPT-medium",  # Use a more reliable model
-    model_kwargs={"temperature": 0.7, "max_length": 512},
+llm = HuggingFaceEndpoint(
+    repo_id="mistralai/Mixtral-8x7B-Instruct-v0.1",
+    task="text-generation",
+    model_kwargs={"temperature":0.5, "max_length":1024},
     huggingfacehub_api_token=os.getenv("HUGGINGFACEHUB_API_TOKEN")
 )
 
