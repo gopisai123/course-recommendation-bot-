@@ -1,8 +1,8 @@
-gradio
-langchain
-chromadb
-sentence-transformers
-pandas
-huggingface_hub
-python-dotenv
-langchain-community 
+gradio>=4.0
+langchain>=0.1.0
+chromadb>=0.4.0
+sentence-transformers>=2.5.0
+pandas>=2.0.0
+huggingface_hub>=0.22.0
+python-dotenv>=1.0.0
+langchain-community==0.0.56
