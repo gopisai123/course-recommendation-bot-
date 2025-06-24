@@ -2,6 +2,7 @@ import gradio as gr
 import pandas as pd
 import os
 import json
+import time
 from langchain_community.vectorstores import Chroma
 from langchain_huggingface.embeddings import HuggingFaceEmbeddings
 from langchain_huggingface.llms import HuggingFaceEndpoint
@@ -32,8 +33,9 @@ def load_course_db():
             # Additional metadata
             level = row.get('Level') or row.get('level') or "Not specified"
             subject = row.get('subject') or "General"
+            url = row.get('url') or row.get('course_url') or "#"
             
-            text = f"{title}: {description} | Level: {level} | Subject: {subject}"
+            text = f"{title}: {description} | Level: {level} | Subject: {subject} | URL: {url}"
             texts.append(text)
             
         return Chroma.from_texts(texts, embeddings), df
@@ -54,22 +56,19 @@ def load_course_db():
              "level": "Advanced", "url": "https://example.com/cyber"}
         ]
         df = pd.DataFrame(sample_courses)
-        texts = [f"{row.title}: {row.description} | Level: {row.level}" for _, row in df.iterrows()]
+        texts = [f"{row.title}: {row.description} | Level: {row.level} | URL: {row.url}" for _, row in df.iterrows()]
         return Chroma.from_texts(texts, embeddings), df
 
 vector_db, course_df = load_course_db()
 
-# Initialize LLM with endpoint URL
-# Initialize LLM with endpoint URL - FIXED
-# More reliable model that works with most tokens
+# Initialize LLM with reliable endpoint
 llm = HuggingFaceEndpoint(
-    endpoint_url="https://api-inference.huggingface.co/models/google/flan-t5-xl",
+    endpoint_url="https://api-inference.huggingface.co/models/HuggingFaceH4/zephyr-7b-beta",
     task="text-generation",
     temperature=0.5,
     max_new_tokens=512,
     huggingfacehub_api_token=os.getenv("HUGGINGFACEHUB_API_TOKEN")
 )
-
 
 def recommend_courses(query):
     try:
@@ -97,7 +96,18 @@ def recommend_courses(query):
         try:
             return json.loads(response)
         except json.JSONDecodeError:
-            return {"recommendations": response, "note": "Response format invalid"}
+            # Improved fallback: Extract courses from text
+            courses = []
+            for line in response.split('\n'):
+                if line.strip() and ('http' in line or 'https' in line):
+                    parts = line.split('-')
+                    if len(parts) > 1:
+                        courses.append({
+                            "title": parts[0].strip(),
+                            "reason": parts[1].split('http')[0].strip(),
+                            "url": line[line.find('http'):].strip()
+                        })
+            return courses if courses else {"recommendations": response, "note": "Response format invalid"}
             
     except Exception as e:
         return {"error": f"Recommendation failed: {str(e)}"}
@@ -167,4 +177,4 @@ with gr.Blocks(theme=gr.themes.Soft(), title="Course Recommendation Bot") as dem
     )
 
 if __name__ == "__main__":
-    demo.launch(share=True)
+    demo.launch(server_name="0.0.0.0", server_port=7860)
