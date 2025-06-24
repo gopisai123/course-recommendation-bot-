@@ -61,11 +61,12 @@ vector_db, course_df = load_course_db()
 
 # Initialize LLM with endpoint URL
 # Initialize LLM with endpoint URL - FIXED
+# More reliable model that works with most tokens
 llm = HuggingFaceEndpoint(
-    endpoint_url="https://api-inference.huggingface.co/models/mistralai/Mixtral-8x7B-Instruct-v0.1",
+    endpoint_url="https://api-inference.huggingface.co/models/google/flan-t5-large",
     task="text-generation",
-    temperature=0.5,  # Moved out of model_kwargs
-    max_new_tokens=512,  # Moved out of model_kwargs
+    temperature=0.5,
+    max_new_tokens=512,
     huggingfacehub_api_token=os.getenv("HUGGINGFACEHUB_API_TOKEN")
 )
 
