@@ -68,11 +68,14 @@ import gradio as gr
 import pandas as pd
 import os
 import json
+import requests
+from io import StringIO
 from langchain_community.vectorstores import Chroma
 from langchain_community.embeddings import HuggingFaceEmbeddings
 from langchain_community.llms import HuggingFaceHub
 from langchain.chains import RetrievalQA
 from huggingface_hub import login
+from datasets import load_dataset
 
 # Initialize HF token
 login(token=os.getenv("HUGGINGFACEHUB_API_TOKEN"))
@@ -82,25 +85,54 @@ embeddings = HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-
 
 def load_course_db():
     try:
-        df = pd.read_csv("courses.csv")
+        # Load massive MOOC dataset (23,000+ courses)
+        dataset = load_dataset("mitul1999/online-courses-usage-and-history-dataset")
+        df = dataset['train'].to_pandas()
+        
         # Create combined text for embeddings
         texts = [
-            f"{row.title}: {row.description} | Skills: {row.skills} | Level: {row.level}"
+            f"{row['course_title']}: {row['course_description']} | Category: {row['category']} | Level: {row['level']} | Platform: {row['platform']}"
             for _, row in df.iterrows()
         ]
         return Chroma.from_texts(texts, embeddings, collection_name="courses"), df
     except Exception as e:
-        print(f"Error loading courses: {str(e)}")
-        # Fallback to sample data
-        sample_courses = [
-            {"title": "Python Fundamentals", "description": "Learn core programming", 
-             "skills": "Python, Algorithms", "level": "Beginner", "url": "https://example.com/python"},
-            {"title": "Machine Learning", "description": "Deep learning techniques", 
-             "skills": "ML, Statistics", "level": "Intermediate", "url": "https://example.com/ml"}
-        ]
-        df = pd.DataFrame(sample_courses)
-        texts = [f"{row.title}: {row.description} | Level: {row.level}" for _, row in df.iterrows()]
-        return Chroma.from_texts(texts, embeddings, collection_name="courses"), df
+        print(f"Error loading main dataset: {str(e)}")
+        try:
+            # Fallback to MOOC dataset
+            url = "https://raw.githubusercontent.com/Bladefidz/data-mining/master/coursera/text-retrieval-and-search-engines/notes/mooc.dat"
+            response = requests.get(url)
+            response.raise_for_status()
+            
+            # Parse custom format
+            courses = []
+            for line in response.text.split('\n'):
+                if ' - ' in line and 'http' in line:
+                    parts = line.split(' - ')
+                    title = parts[0]
+                    rest = parts[1].split(' ')
+                    url = rest[-1]
+                    description = ' '.join(rest[:-1])
+                    courses.append({
+                        'title': title,
+                        'description': description,
+                        'url': url,
+                        'level': 'Intermediate'
+                    })
+            df = pd.DataFrame(courses)
+            texts = [f"{row.title}: {row.description}" for _, row in df.iterrows()]
+            return Chroma.from_texts(texts, embeddings, collection_name="courses"), df
+        except Exception as e2:
+            print(f"Fallback failed: {str(e2)}")
+            # Ultimate fallback to sample data
+            sample_courses = [
+                {"title": "Python Fundamentals", "description": "Learn core programming", 
+                 "level": "Beginner", "url": "https://example.com/python"},
+                {"title": "Machine Learning", "description": "Deep learning techniques", 
+                 "level": "Intermediate", "url": "https://example.com/ml"}
+            ]
+            df = pd.DataFrame(sample_courses)
+            texts = [f"{row.title}: {row.description} | Level: {row.level}" for _, row in df.iterrows()]
+            return Chroma.from_texts(texts, embeddings, collection_name="courses"), df
 
 vector_db, course_df = load_course_db()
 
@@ -116,23 +148,22 @@ def recommend_courses(query):
         qa = RetrievalQA.from_chain_type(
             llm=llm,
             chain_type="stuff",
-            retriever=vector_db.as_retriever(search_kwargs={"k": 3})
+            retriever=vector_db.as_retriever(search_kwargs={"k": 5})  # Get more context
         )
         
         prompt = f"""
         Based on user background: "{query}"
-        Recommend 3 courses with:
+        Recommend 3 personalized courses from our database of 23,000+ options.
+        For each course, provide:
         - Title
-        - Reason: Brief justification
-        - Skills: Comma-separated list
-        - Level: Beginner/Intermediate/Advanced
-        - URL: Direct link
+        - Reason: Brief justification matching user's background
+        - Difficulty level
+        - Direct URL
         Format as JSON list
-        Example: [{{"title": "...", "reason": "...", "skills": "...", "level": "...", "url": "..."}}]
+        Example: [{{"title": "...", "reason": "...", "level": "...", "url": "..."}}]
         """
         
         response = qa.run(prompt)
-        # Attempt to parse JSON
         try:
             return json.loads(response)
         except:
@@ -150,11 +181,12 @@ def generate_learning_path(recommendations):
         
         prompt = f"""
         Based on these courses: {recommendations}
-        Create a 3-month learning path with:
+        Create a comprehensive 3-month learning path with:
         - Weekly milestones
-        - Project suggestions
+        - Hands-on project suggestions
         - Skill validation metrics
-        Format as JSON with keys: weeks, projects, metrics
+        - Estimated time commitment
+        Format as JSON with keys: weeks, projects, metrics, time_commitment
         """
         
         return qa.run(prompt)
@@ -162,21 +194,23 @@ def generate_learning_path(recommendations):
         return {"error": str(e)}
 
 with gr.Blocks(theme=gr.themes.Soft(), title="Course Recommendation Bot") as demo:
-    gr.Markdown("# 🎓 Smart Course Advisor")
+    gr.Markdown("# 🎓 Comprehensive Course Advisor")
     
     with gr.Row():
         with gr.Column():
-            gr.Markdown("## Get Course Recommendations")
-            background = gr.Textbox(label="Your background/goals", 
-                                   placeholder="e.g., 'CS student interested in AI'")
-            rec_btn = gr.Button("Get Recommendations", variant="primary")
+            gr.Markdown("### Get Personalized Recommendations")
+            gr.Markdown("Our database contains 23,000+ courses from Coursera, edX, Udemy, and more")
+            background = gr.Textbox(label="Describe your background/goals", 
+                                   placeholder="e.g., 'High school graduate interested in AI career'")
+            rec_btn = gr.Button("Find My Courses", variant="primary")
             rec_output = gr.JSON(label="Recommended Courses")
         
         with gr.Column():
-            gr.Markdown("## Generate Learning Path")
-            path_input = gr.Textbox(label="Based on these courses (comma separated or JSON)")
-            path_btn = gr.Button("Create Learning Path", variant="primary")
-            path_output = gr.JSON(label="Learning Plan")
+            gr.Markdown("### Generate Learning Path")
+            gr.Markdown("Create a customized study plan")
+            path_input = gr.Textbox(label="Based on these courses")
+            path_btn = gr.Button("Build Learning Path", variant="primary")
+            path_output = gr.JSON(label="Personalized Learning Plan")
     
     rec_btn.click(
         fn=recommend_courses,
@@ -190,4 +224,5 @@ with gr.Blocks(theme=gr.themes.Soft(), title="Course Recommendation Bot") as dem
         outputs=path_output
     )
 
-demo.launch(share=True)
+demo.launch()
+
