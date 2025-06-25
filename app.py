@@ -72,10 +72,10 @@ vector_db, course_df = load_course_db()
 
 # Initialize LLM with reliable endpoint
 llm = HuggingFaceEndpoint(
-    endpoint_url="https://api-inference.huggingface.co/models/HuggingFaceH4/zephyr-7b-beta",
+    endpoint_url="https://api-inference.huggingface.co/models/gpt2",
     task="text-generation",
-    temperature=0.5,
-    max_new_tokens=256,  # Reduced for faster response
+    temperature=0.7,
+    max_new_tokens=128,  # You can increase if needed, but 128 is fast and safe
     huggingfacehub_api_token=os.getenv("HUGGINGFACEHUB_API_TOKEN")
 )
 
