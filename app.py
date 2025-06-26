@@ -58,7 +58,6 @@ def load_course_db():
         texts = [f"{row['title']}: {row['description']} | URL: {row['url']} | Platform: {row['platform']}" for _, row in df.iterrows()]
         return Chroma.from_texts(texts, embeddings), df
 
-
 # Load course data
 vector_db, course_df = load_course_db()
 
@@ -74,18 +73,41 @@ generator = pipeline(
 )
 llm = HuggingFacePipeline(pipeline=generator)
 
+def extract_platform(query):
+    """Extract platform name from query if specified"""
+    platforms = ["udemy", "coursera", "edx"]
+    query_lower = query.lower()
+    for platform in platforms:
+        if f"from {platform}" in query_lower or f"on {platform}" in query_lower:
+            return platform.capitalize()
+    return None
+
 def recommend_courses(query):
     try:
-        # Retrieve top 3 relevant courses
-        retrieved = vector_db.similarity_search(query, k=3)
+        platform = extract_platform(query)
+        search_query = re.sub(r'\b(from|on)\s+\w+', '', query, flags=re.IGNORECASE).strip()
+        
+        if platform:
+            # Filter courses for the specified platform
+            platform_courses = course_df[course_df['platform'].str.lower() == platform.lower()]
+            if platform_courses.empty:
+                return [{"error": f"No courses found on {platform}"}]
+                
+            # Create temporary vector store for this platform
+            texts = platform_courses['text'].tolist()
+            temp_vector_db = Chroma.from_texts(texts, embeddings)
+            retrieved = temp_vector_db.similarity_search(search_query, k=3)
+        else:
+            # Search all platforms
+            retrieved = vector_db.similarity_search(query, k=3)
+
         courses = []
         for doc in retrieved:
-            # Updated regex to capture platform
             match = re.match(r'^(.*?): (.*?) \| URL: (.*?) \| Platform: (.*)$', doc.page_content)
             if match:
                 courses.append({
                     "title": match.group(1),
-                    "reason": match.group(2),
+                    "reason": match.group(2) if match.group(2) != "No description" else "Relevant course based on your query",
                     "url": match.group(3),
                     "platform": match.group(4)
                 })
@@ -121,9 +143,10 @@ with gr.Blocks(theme=gr.themes.Soft(), title="Multi-Platform Course Bot") as dem
     with gr.Row():
         with gr.Column():
             gr.Markdown("### Get Course Recommendations")
+            gr.Markdown("**Tip**: Add 'from Udemy' or 'on Coursera' to filter results")
             background = gr.Textbox(
                 label="Your background/goals", 
-                placeholder="e.g., 'CS student interested in AI'",
+                placeholder="e.g., 'AI from Udemy' or 'Python on Coursera'",
                 lines=2
             )
             rec_btn = gr.Button("Get Recommendations", variant="primary")
