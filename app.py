@@ -50,44 +50,25 @@ llm = HuggingFacePipeline(pipeline=generator)
 
 def recommend_courses(query):
     try:
-        qa = RetrievalQA.from_chain_type(
-            llm=llm,
-            chain_type="stuff",
-            retriever=vector_db.as_retriever(search_kwargs={"k": 3})
-        )
-        
-        prompt = f"""
-        Based on user background: "{query}"
-        Recommend 3 courses with:
-        - Title
-        - Reason: Brief justification
-        - Direct URL
-        Format as JSON list: [{{"title": "...", "reason": "...", "url": "..."}}]
-        """
-        
-        result = qa.invoke({"query": prompt})
-        response = result["result"]
-        
-        # Enhanced JSON parsing
-        try:
-            json_match = re.search(r'\[\s*\{.*?\}\s*(?:,\s*\{.*?\}\s*)*\]', response, re.DOTALL)
-            if json_match:
-                return json.loads(json_match.group(0))
-            # Fallback: Manual extraction
-            courses = []
-            pattern = r'"title":\s*"([^"]+)".*?"reason":\s*"([^"]+)".*?"url":\s*"([^"]+)"'
-            for match in re.finditer(pattern, response, re.DOTALL):
+        # Retrieve top 3 relevant courses
+        retrieved = vector_db.similarity_search(query, k=3)
+        courses = []
+        for doc in retrieved:
+            # Parse the course info from doc.page_content
+            match = re.match(r'^(.*?): (.*?) \| URL: (.*)$', doc.page_content)
+            if match:
+                title = match.group(1)
+                description = match.group(2)
+                url = match.group(3)
                 courses.append({
-                    "title": match.group(1),
-                    "reason": match.group(2),
-                    "url": match.group(3)
+                    "title": title,
+                    "reason": description,
+                    "url": url
                 })
-            return courses if courses else [{"error": "Could not parse courses"}]
-        except:
-            return [{"error": "JSON parsing failed"}]
-            
+        return courses if courses else [{"error": "No courses found"}]
     except Exception as e:
-        return [{"error": f"Recommendation failed: {str(e)}"}]
+        return [{"error": f"System error: {str(e)}"}]
+
 
 def generate_learning_path(recommendations):
     try:
