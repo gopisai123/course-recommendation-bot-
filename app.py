@@ -2,12 +2,17 @@ import gradio as gr
 import pandas as pd
 import json
 import re
+import logging
 from langchain_community.vectorstores import Chroma
 from langchain_huggingface import HuggingFaceEmbeddings, HuggingFacePipeline  # Updated imports
 from langchain.chains import RetrievalQA
 from transformers import pipeline, AutoTokenizer
 
-# Global variables for resource caching
+# Set up logging
+logging.basicConfig(level=logging.ERROR)
+logger = logging.getLogger(__name__)
+
+# Global resources
 vector_db = None
 course_df = None
 llm = None
@@ -18,32 +23,31 @@ def init_resources():
     global vector_db, course_df, llm, tokenizer
     
     if vector_db is None:
-        # Initialize embedding model
-        embeddings = HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
-        
-        # Load course database
         try:
+            # Initialize embedding model
+            embeddings = HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
+            
+            # Load course database
             df = pd.read_csv("courses.csv")
-            print(f"Loaded CSV with columns: {df.columns.tolist()}")
+            logger.info(f"Loaded CSV with columns: {df.columns.tolist()}")
+            
             texts = []
             for _, row in df.iterrows():
                 title = row.get('title') or row.get('course_title') or "Untitled Course"
                 description = row.get('description') or row.get('course_description') or "No description"
-                # Truncate description
-                if len(str(description)) > 150:
-                    description = str(description)[:147] + "..."
                 level = row.get('Level') or "Not specified"
                 url = row.get('url') or row.get('course_url') or "#"
-                text = f"{title}: {description} | Level: {level} | URL: {url}"
+                text = f"{title}: {description[:150]}{'...' if len(description) > 150 else ''} | Level: {level} | URL: {url}"
                 texts.append(text)
+                
             vector_db = Chroma.from_texts(texts, embeddings)
             course_df = df
         except Exception as e:
-            print(f"Error loading CSV: {str(e)}")
-            # Fallback to sample data
+            logger.error(f"Error loading CSV: {str(e)}")
+            # Fallback data
             sample_courses = [
-                {"title": "Python Fundamentals", "description": "Learn programming", "level": "Beginner", "url": "https://example.com/python"},
-                {"title": "Machine Learning", "description": "ML techniques", "level": "Intermediate", "url": "https://example.com/ml"},
+                {"title": "Python Fundamentals", "description": "Learn programming", "level": "Beginner", "url": "#"},
+                {"title": "Machine Learning", "description": "ML techniques", "level": "Intermediate", "url": "#"},
             ]
             df = pd.DataFrame(sample_courses)
             texts = [f"{row['title']}: {row['description']} | Level: {row['level']} | URL: {row['url']}" for _, row in df.iterrows()]
@@ -51,7 +55,6 @@ def init_resources():
             course_df = df
     
     if llm is None:
-        # Initialize LLM
         tokenizer = AutoTokenizer.from_pretrained("distilgpt2")
         generator = pipeline(
             "text-generation",
@@ -73,9 +76,9 @@ def extract_json_from_response(response):
         if json_match:
             return json.loads(json_match.group(1))
         
-        # Fallback: Pattern-based extraction
+        # Fallback: Key-value extraction
         courses = []
-        pattern = r'"?title"?:\s*"([^"]+)".*?"reason"?:\s*"([^"]+)".*?"level"?:\s*"([^"]+)".*?"url"?:\s*"([^"]+)"'
+        pattern = r'"title":\s*"([^"]+)".*?"reason":\s*"([^"]+)".*?"level":\s*"([^"]+)".*?"url":\s*"([^"]+)"'
         matches = re.finditer(pattern, response, re.DOTALL)
         for match in matches:
             courses.append({
@@ -84,12 +87,12 @@ def extract_json_from_response(response):
                 "level": match.group(3),
                 "url": match.group(4)
             })
-        return courses if courses else [{"error": "Couldn't parse response", "raw": response}]
+        return courses if courses else [{"error": "Parsing failed", "raw": response[:200] + "..."}]
     except Exception as e:
-        return [{"error": f"JSON parsing failed: {str(e)}", "raw": response}]
+        return [{"error": f"JSON error: {str(e)}", "raw": response[:200] + "..."}]
 
 def recommend_courses(query):
-    # Initialize resources on first call
+    # Initialize resources
     vector_db, course_df, llm, tokenizer = init_resources()
     
     try:
@@ -99,45 +102,48 @@ def recommend_courses(query):
             retriever=vector_db.as_retriever(search_kwargs={"k": 3})
         )
         
-        # Optimized prompt with JSON schema
+        # Optimized prompt
         prompt = f"""
         User background: "{query}"
-        Recommend exactly 3 courses in JSON format with these keys:
+        Recommend exactly 3 courses in JSON format with:
         - title (string)
-        - reason (string, 1-sentence justification)
-        - level (string, difficulty)
-        - url (string, direct link)
+        - reason (1-sentence justification)
+        - level (Beginner/Intermediate/Advanced)
+        - url (direct link)
         
-        Output ONLY valid JSON array:
+        Output ONLY JSON array:
         [
           {{
             "title": "Course Name",
             "reason": "Brief reason",
-            "level": "Beginner/Intermediate/Advanced",
+            "level": "Difficulty",
             "url": "https://link.com"
           }},
-          {{...}},
-          {{...}}
+          // 2 more
         ]
         """
         
         # Token length check
         tokens = tokenizer(prompt, return_tensors="pt").input_ids
         if tokens.shape[1] > 800:
-            return [{"error": "Input too long. Please simplify your query"}]
+            return [{"error": "Query too long. Simplify your request"}]
             
         result = qa.invoke({"query": prompt})
         response = result["result"]
         return extract_json_from_response(response)
-            
     except Exception as e:
-        return [{"error": f"Recommendation failed: {str(e)}"}]
+        logger.exception("Recommendation failed")
+        return [{"error": f"System error: {str(e)}"}]
+
+# Initialize before launch
+init_resources()
 
 # Gradio interface
 with gr.Blocks() as demo:
     gr.Markdown("## 🎓 AI Course Recommender")
     with gr.Row():
-        background = gr.Textbox(label="Your Background/Goals", placeholder="e.g., '3rd year CS student interested in ML'")
+        background = gr.Textbox(label="Your Background/Goals", 
+                               placeholder="e.g., '3rd year CS student interested in ML'")
         recommend_btn = gr.Button("Recommend Courses")
     
     output = gr.JSON(label="Recommended Courses")
@@ -148,9 +154,5 @@ with gr.Blocks() as demo:
         outputs=output
     )
 
-# Initialize resources before launch
-init_resources()
-
-# Launch app
 if __name__ == "__main__":
     demo.launch()
