@@ -12,7 +12,7 @@ embeddings = HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-
 def load_course_db():
     try:
         csv_files = [
-            ("edx_courses.csv", "edX"),
+            ("courses.csv", "edX"),             # edX data
             ("coursera_data.csv", "Coursera"),
             ("udemy_courses.csv", "Udemy")
         ]
@@ -74,7 +74,6 @@ generator = pipeline(
 llm = HuggingFacePipeline(pipeline=generator)
 
 def extract_platform(query):
-    """Extract platform name from query if specified"""
     platforms = ["udemy", "coursera", "edx"]
     query_lower = query.lower()
     for platform in platforms:
@@ -88,17 +87,13 @@ def recommend_courses(query):
         search_query = re.sub(r'\b(from|on)\s+\w+', '', query, flags=re.IGNORECASE).strip()
         
         if platform:
-            # Filter courses for the specified platform
             platform_courses = course_df[course_df['platform'].str.lower() == platform.lower()]
             if platform_courses.empty:
                 return [{"error": f"No courses found on {platform}"}]
-                
-            # Create temporary vector store for this platform
             texts = platform_courses['text'].tolist()
             temp_vector_db = Chroma.from_texts(texts, embeddings)
             retrieved = temp_vector_db.similarity_search(search_query, k=3)
         else:
-            # Search all platforms
             retrieved = vector_db.similarity_search(query, k=3)
 
         courses = []
