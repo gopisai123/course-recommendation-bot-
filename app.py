@@ -7,6 +7,7 @@ from langchain_community.vectorstores import Chroma
 from langchain_huggingface.embeddings import HuggingFaceEmbeddings
 from transformers import pipeline, AutoTokenizer
 from langchain.chains import RetrievalQA
+from langchain_huggingface import HuggingFacePipeline
 
 # Initialize embedding model
 embeddings = HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
@@ -21,19 +22,17 @@ def load_course_db():
             description = row.get('description') or row.get('course_description') or "No description available"
             if len(str(description)) > 150:
                 description = str(description)[:147] + "..."
-            level = row.get('Level') or row.get('level') or "Not specified"
-            url = row.get('url') or row.get('course_url') or "#"
-            text = f"{title}: {description} | Level: {level} | URL: {url}"
+            text = f"{title}: {description}"
             texts.append(text)
         return Chroma.from_texts(texts, embeddings), df
     except Exception as e:
         print(f"Error loading CSV: {str(e)}")
         sample_courses = [
-            {"title": "Python Fundamentals", "description": "Learn programming", "level": "Beginner", "url": "https://example.com/python"},
-            {"title": "Machine Learning", "description": "ML techniques", "level": "Intermediate", "url": "https://example.com/ml"},
+            {"title": "Python Fundamentals", "description": "Learn programming", "url": "https://example.com/python"},
+            {"title": "Machine Learning", "description": "ML techniques", "url": "https://example.com/ml"},
         ]
         df = pd.DataFrame(sample_courses)
-        texts = [f"{row['title']}: {row['description']} | Level: {row['level']} | URL: {row['url']}" for _, row in df.iterrows()]
+        texts = [f"{row['title']}: {row['description']}" for _, row in df.iterrows()]
         return Chroma.from_texts(texts, embeddings), df
 
 # Load course data
@@ -49,12 +48,8 @@ generator = pipeline(
     truncation=True,
     temperature=0.5
 )
-
-# Use HuggingFacePipeline wrapper from langchain_huggingface
-from langchain_huggingface import HuggingFacePipeline
 llm = HuggingFacePipeline(pipeline=generator)
 
-# Function to extract number of courses from query
 def extract_number_from_query(query, default=3):
     try:
         numbers = re.findall(r'\d+', query)
@@ -64,44 +59,39 @@ def extract_number_from_query(query, default=3):
     except:
         return default
 
-# Function to extract JSON from model response
 def extract_json_from_response(response):
     try:
         json_match = re.search(r'\[\s*\{.*?\}\s*(?:,\s*\{.*?\}\s*)*\]', response, re.DOTALL)
         if json_match:
             return json.loads(json_match.group(0))
         courses = []
-        pattern = r'"title":\s*"([^"]+)".*?"reason":\s*"([^"]+)".*?"level":\s*"([^"]+)".*?"url":\s*"([^"]+)"'
+        pattern = r'"title":\s*"([^"]+)".*?"reason":\s*"([^"]+)".*?"url":\s*"([^"]+)"'
         for match in re.finditer(pattern, response, re.DOTALL):
             courses.append({
                 "title": match.group(1),
                 "reason": match.group(2),
-                "level": match.group(3),
-                "url": match.group(4)
+                "url": match.group(3)
             })
         return courses if courses else [{"error": "No courses found", "raw": response[:100]}]
     except Exception as e:
         return [{"error": f"JSON error: {str(e)}", "raw": response[:100]}]
 
-# Recommend courses function
-def recommend_courses(query, level):
+def recommend_courses(query):
     try:
         num_courses = extract_number_from_query(query)
-        retriever = vector_db.as_retriever(search_kwargs={"k": num_courses, "filter": {"level": level.lower()}})
+        retriever = vector_db.as_retriever(search_kwargs={"k": num_courses})
         qa = RetrievalQA.from_chain_type(llm=llm, chain_type="stuff", retriever=retriever)
         prompt = f"""
         User background: "{query}"
-        Recommend exactly {num_courses} {level}-level courses in JSON format with:
+        Recommend exactly {num_courses} courses in JSON format with:
         - title (string)
         - reason (1-sentence string)
-        - level (string matching: Beginner/Intermediate/Advanced)
         - url (valid URL string)
         Output ONLY a JSON array following this schema:
         [
           {{
             "title": "Course Name",
             "reason": "Brief justification",
-            "level": "{level}",
             "url": "https://valid.url"
           }},
           ... (repeat for {num_courses} courses)
@@ -113,7 +103,6 @@ def recommend_courses(query, level):
     except Exception as e:
         return [{"error": f"System error: {str(e)}"}]
 
-# Generate learning path function
 def generate_learning_path(recommendations):
     try:
         if not recommendations or not recommendations.strip():
@@ -133,14 +122,13 @@ def generate_learning_path(recommendations):
     except Exception as e:
         return {"error": f"Learning path generation failed: {str(e)}"}
 
-# Gradio interface
+# Gradio interface (no difficulty level)
 with gr.Blocks(theme=gr.themes.Soft(), title="Course Recommendation Bot") as demo:
     gr.Markdown("# 🎓 Smart Course Advisor")
     with gr.Row():
         with gr.Column():
             gr.Markdown("### Get Course Recommendations")
             background = gr.Textbox(label="Your background/goals", placeholder="e.g., 'CS student interested in AI'", lines=2)
-            level_selector = gr.Radio(choices=["Beginner", "Intermediate", "Advanced"], value="Beginner", label="Select difficulty level")
             rec_btn = gr.Button("Get Recommendations", variant="primary")
             rec_output = gr.JSON(label="Recommended Courses")
         with gr.Column():
@@ -149,7 +137,7 @@ with gr.Blocks(theme=gr.themes.Soft(), title="Course Recommendation Bot") as dem
             path_input = gr.Textbox(label="Courses (comma separated)", placeholder="e.g., Python, Machine Learning")
             path_btn = gr.Button("Generate Learning Path", variant="primary")
             path_output = gr.JSON(label="Personalized Plan")
-    rec_btn.click(fn=recommend_courses, inputs=[background, level_selector], outputs=rec_output)
+    rec_btn.click(fn=recommend_courses, inputs=background, outputs=rec_output)
     path_btn.click(fn=generate_learning_path, inputs=path_input, outputs=path_output)
 
 if __name__ == "__main__":
