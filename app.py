@@ -1,16 +1,11 @@
 import gradio as gr
 import pandas as pd
-import os
 import json
-import time
 from langchain_community.vectorstores import Chroma
-from langchain_huggingface.embeddings import HuggingFaceEmbeddings
-from langchain_huggingface.llms import HuggingFaceEndpoint
+from langchain_community.embeddings import HuggingFaceEmbeddings  # Updated import
 from langchain.chains import RetrievalQA
-from huggingface_hub import login
-
-# Initialize HF token
-login(token=os.getenv("HUGGINGFACEHUB_API_TOKEN"))
+from transformers import pipeline  # Local model
+from langchain_community.llms import HuggingFacePipeline  # Local model
 
 # Initialize embedding model
 embeddings = HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
@@ -21,16 +16,11 @@ def load_course_db():
         df = pd.read_csv("courses.csv")
         print(f"Loaded CSV with columns: {df.columns.tolist()}")
         
-        # Create texts for embedding using available columns
+        # Create texts for embedding
         texts = []
         for _, row in df.iterrows():
-            # Title column
             title = row.get('title') or row.get('course_title') or row.get('name') or "Untitled Course"
-            
-            # Description column
             description = row.get('description') or row.get('course_description') or row.get('summary') or "No description available"
-            
-            # Additional metadata
             level = row.get('Level') or row.get('level') or "Not specified"
             subject = row.get('subject') or "General"
             url = row.get('url') or row.get('course_url') or "#"
@@ -61,14 +51,14 @@ def load_course_db():
 
 vector_db, course_df = load_course_db()
 
-# Initialize LLM with reliable endpoint
-llm = HuggingFaceEndpoint(
-    endpoint_url="https://api-inference.huggingface.co/models/HuggingFaceH4/zephyr-7b-beta",
-    task="text-generation",
-    temperature=0.5,
-    max_new_tokens=512,
-    huggingfacehub_api_token=os.getenv("HUGGINGFACEHUB_API_TOKEN")
+# Initialize LOCAL LLM (Free, no API quota)
+generator = pipeline(
+    "text-generation", 
+    model="distilgpt2",  # Smaller & faster than GPT-2
+    max_new_tokens=256,
+    temperature=0.5
 )
+llm = HuggingFacePipeline(pipeline=generator)
 
 def recommend_courses(query):
     try:
@@ -88,26 +78,9 @@ def recommend_courses(query):
         Format as JSON list: [{{"title": "...", "reason": "...", "level": "...", "url": "..."}}]
         """
         
-        # Get response from LLM
         result = qa.invoke({"query": prompt})
         response = result["result"]
-        
-        # Try to parse JSON, fallback to raw text
-        try:
-            return json.loads(response)
-        except json.JSONDecodeError:
-            # Improved fallback: Extract courses from text
-            courses = []
-            for line in response.split('\n'):
-                if line.strip() and ('http' in line or 'https' in line):
-                    parts = line.split('-')
-                    if len(parts) > 1:
-                        courses.append({
-                            "title": parts[0].strip(),
-                            "reason": parts[1].split('http')[0].strip(),
-                            "url": line[line.find('http'):].strip()
-                        })
-            return courses if courses else {"recommendations": response, "note": "Response format invalid"}
+        return json.loads(response)
             
     except Exception as e:
         return {"error": f"Recommendation failed: {str(e)}"}
@@ -134,7 +107,7 @@ def generate_learning_path(recommendations):
         )
         
         result = qa.invoke({"query": prompt})
-        return {"learning_path": result["result"]}
+        return json.loads(result["result"])
         
     except Exception as e:
         return {"error": f"Learning path generation failed: {str(e)}"}
