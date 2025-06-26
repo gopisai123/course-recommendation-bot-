@@ -11,23 +11,27 @@ embeddings = HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-
 
 def load_course_db():
     try:
-        # List all your CSV files and their platforms
         csv_files = [
-            ("courses.csv", "Generic"),
+            ("edx_courses.csv", "edX"),
             ("coursera_data.csv", "Coursera"),
-            ("udemy_courses.csv", "Udemy"),
+            ("udemy_courses.csv", "Udemy")
         ]
         all_courses = []
         for filename, platform in csv_files:
             try:
                 df = pd.read_csv(filename)
-                print(f"Loaded {filename} with columns: {df.columns.tolist()}")
-                # Add platform column (overwrites if exists, adds if missing)
                 df['platform'] = platform
                 for _, row in df.iterrows():
                     title = row.get('title') or row.get('course_title') or "Untitled Course"
                     description = row.get('description') or row.get('course_description') or row.get('subject') or "No description"
-                    url = row.get('url') or row.get('course_url') or row.get('link') or "#"
+                    url = row.get('url') or row.get('link') or "#"
+                    # Generate URL if missing
+                    if url == "#" or pd.isna(url):
+                        slug = re.sub(r'[^\w\s-]', '', title).strip().lower().replace(' ', '-')
+                        if platform == "Coursera":
+                            url = f"https://www.coursera.org/learn/{slug}"
+                        elif platform == "Udemy":
+                            url = f"https://www.udemy.com/course/{slug}/"
                     plat = row['platform']
                     text = f"{title}: {description} | URL: {url} | Platform: {plat}"
                     all_courses.append({
@@ -41,13 +45,11 @@ def load_course_db():
                 print(f"Error loading {filename}: {str(e)}")
         if not all_courses:
             raise ValueError("No courses loaded from any file.")
-        # Build vector DB
         texts = [c["text"] for c in all_courses]
         df = pd.DataFrame(all_courses)
         return Chroma.from_texts(texts, embeddings), df
     except Exception as e:
         print(f"Error loading datasets: {str(e)}")
-        # Fallback to sample data
         sample_courses = [
             {"title": "Python Fundamentals", "description": "Learn programming", "url": "#", "platform": "Sample"},
             {"title": "Machine Learning", "description": "ML techniques", "url": "#", "platform": "Sample"},
@@ -55,6 +57,7 @@ def load_course_db():
         df = pd.DataFrame(sample_courses)
         texts = [f"{row['title']}: {row['description']} | URL: {row['url']} | Platform: {row['platform']}" for _, row in df.iterrows()]
         return Chroma.from_texts(texts, embeddings), df
+
 
 # Load course data
 vector_db, course_df = load_course_db()
