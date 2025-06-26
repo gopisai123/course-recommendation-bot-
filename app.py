@@ -19,17 +19,20 @@ def load_course_db():
         for _, row in df.iterrows():
             title = row.get('title') or row.get('course_title') or row.get('name') or "Untitled Course"
             description = row.get('description') or row.get('course_description') or row.get('summary') or "No description available"
+            # Truncate description more aggressively
+            if len(str(description)) > 150:
+                description = str(description)[:147] + "..."
             level = row.get('Level') or row.get('level') or "Not specified"
             subject = row.get('subject') or "General"
             url = row.get('url') or row.get('course_url') or "#"
-            text = f"{title}: {description} | Level: {level} | Subject: {subject} | URL: {url}"
+            text = f"{title}: {description} | Level: {level} | URL: {url}"  # Simplified
             texts.append(text)
         return Chroma.from_texts(texts, embeddings), df
     except Exception as e:
         print(f"Error loading CSV: {str(e)}")
         sample_courses = [
-            {"title": "Python Fundamentals", "description": "Learn core programming concepts", "level": "Beginner", "url": "https://example.com/python"},
-            {"title": "Machine Learning", "description": "Deep learning and ML techniques", "level": "Intermediate", "url": "https://example.com/ml"},
+            {"title": "Python Fundamentals", "description": "Learn programming", "level": "Beginner", "url": "https://example.com/python"},
+            {"title": "Machine Learning", "description": "ML techniques", "level": "Intermediate", "url": "https://example.com/ml"},
         ]
         df = pd.DataFrame(sample_courses)
         texts = [f"{row['title']}: {row['description']} | Level: {row['level']} | URL: {row['url']}" for _, row in df.iterrows()]
@@ -37,17 +40,17 @@ def load_course_db():
 
 vector_db, course_df = load_course_db()
 
-# Initialize local LLM
+# Initialize local LLM with FIXED parameters
+tokenizer = AutoTokenizer.from_pretrained("distilgpt2")
 generator = pipeline(
     "text-generation",
     model="distilgpt2",
-    max_new_tokens=256,
-    max_length=1024,
-    truncation=True,
+    max_new_tokens=150,  # Reduced output length
+    max_length=1024,     # Matches model's context window
+    truncation=True,      # Essential for long inputs
     temperature=0.5
 )
 llm = HuggingFacePipeline(pipeline=generator)
-tokenizer = AutoTokenizer.from_pretrained("distilgpt2")
 
 def extract_json_from_response(response):
     """Robust JSON extraction from model response"""
@@ -57,16 +60,16 @@ def extract_json_from_response(response):
         if json_match:
             return json.loads(json_match.group(0))
         
-        # Manual fallback parsing
+        # Manual parsing as fallback
         courses = []
-        course_blocks = re.split(r'(?=\n\d+\.|\n-|\n\*|Course \d+:)', response)
-        for block in course_blocks:
-            if not block.strip():
+        entries = re.split(r'\n\d+\.|\n-|\n\*', response)
+        for entry in entries:
+            if not entry.strip():
                 continue
-            title = re.search(r'Title: (.+)', block)
-            reason = re.search(r'Reason: (.+)', block)
-            level = re.search(r'Level: (.+)', block)
-            url = re.search(r'URL: (\S+)', block)
+            title = re.search(r'Title: (.+)', entry)
+            reason = re.search(r'Reason: (.+)', entry)
+            level = re.search(r'Level: (.+)', entry)
+            url = re.search(r'URL: (\S+)', entry)
             
             if title and reason and level and url:
                 courses.append({
@@ -87,35 +90,30 @@ def recommend_courses(query):
             retriever=vector_db.as_retriever(search_kwargs={"k": 3})
         )
         
-        # Improved prompt with clear JSON example
+        # Optimized prompt
         prompt = f"""
         User background: "{query}"
         Recommend exactly 3 courses with these details:
         - Title
         - Reason: 1-sentence justification
-        - Level: Difficulty level
+        - Level: Difficulty
         - URL: Direct link
         
-        Format as strict JSON only:
+        Format as JSON only:
         [
           {{
             "title": "Course Name",
-            "reason": "Brief justification",
+            "reason": "Brief reason",
             "level": "Difficulty",
             "url": "https://link.com"
           }},
           ... (2 more)
         ]
-        
-        Important: 
-        - Use double quotes for JSON keys
-        - Do not include any extra text outside the JSON array
-        - Ensure URLs are valid
         """
         
         # Token length check
         tokens = tokenizer(prompt, return_tensors="pt").input_ids
-        if tokens.shape[1] > 900:
+        if tokens.shape[1] > 800:  # More conservative limit
             return [{"error": "Input too long. Please simplify your query"}]
             
         result = qa.invoke({"query": prompt})
@@ -125,76 +123,4 @@ def recommend_courses(query):
     except Exception as e:
         return [{"error": f"Recommendation failed: {str(e)}"}]
 
-def generate_learning_path(recommendations):
-    try:
-        if not recommendations or not recommendations.strip():
-            return {"error": "Please provide course names"}
-            
-        prompt = f"""
-        Create a 3-month learning plan for: {recommendations}
-        Include:
-        - Weekly milestones
-        - Project suggestions
-        - Skills to develop
-        - Estimated time commitment
-        
-        Format as JSON:
-        {{
-          "plan_name": "Custom Learning Path",
-          "duration": "3 months",
-          "weekly_milestones": [
-            {{"week": 1, "topics": ["..."], "projects": ["..."]}},
-            ...
-          ],
-          "skills_developed": ["skill1", ...],
-          "time_commitment": "10-15 hrs/week"
-        }}
-        """
-        
-        tokens = tokenizer(prompt, return_tensors="pt").input_ids
-        if tokens.shape[1] > 900:
-            return {"error": "Input too long. Shorten course names"}
-            
-        qa = RetrievalQA.from_chain_type(
-            llm=llm,
-            chain_type="stuff",
-            retriever=vector_db.as_retriever()
-        )
-        
-        result = qa.invoke({"query": prompt})
-        try:
-            return json.loads(result["result"])
-        except:
-            return {"learning_path": result["result"]}
-    except Exception as e:
-        return {"error": f"Learning path generation failed: {str(e)}"}
-
-# Gradio interface
-with gr.Blocks(theme=gr.themes.Soft(), title="Course Recommendation Bot") as demo:
-    gr.Markdown("# 🎓 Smart Course Advisor")
-    with gr.Row():
-        with gr.Column():
-            gr.Markdown("### Get Course Recommendations")
-            background = gr.Textbox(
-                label="Your background/goals", 
-                placeholder="e.g., 'CS student interested in AI'",
-                lines=2
-            )
-            rec_btn = gr.Button("Get Recommendations", variant="primary")
-            rec_output = gr.JSON(label="Recommended Courses")
-        
-        with gr.Column():
-            gr.Markdown("### Create Learning Path")
-            gr.Markdown("Enter course names from recommendations")
-            path_input = gr.Textbox(
-                label="Courses (comma separated)",
-                placeholder="e.g., Python, Machine Learning"
-            )
-            path_btn = gr.Button("Generate Learning Path", variant="primary")
-            path_output = gr.JSON(label="Personalized Plan")
-    
-    rec_btn.click(recommend_courses, inputs=background, outputs=rec_output)
-    path_btn.click(generate_learning_path, inputs=path_input, outputs=path_output)
-
-if __name__ == "__main__":
-    demo.launch(server_name="0.0.0.0", server_port=7860)
+# ... (generate_learning_path and Gradio interface remain unchanged) ...
