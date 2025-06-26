@@ -12,7 +12,7 @@ embeddings = HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-
 def load_course_db():
     try:
         csv_files = [
-            ("courses.csv", "edX"),             # edX data
+            ("courses.csv", "edX"),
             ("coursera_data.csv", "Coursera"),
             ("udemy_courses.csv", "Udemy")
         ]
@@ -58,6 +58,7 @@ def load_course_db():
         texts = [f"{row['title']}: {row['description']} | URL: {row['url']} | Platform: {row['platform']}" for _, row in df.iterrows()]
         return Chroma.from_texts(texts, embeddings), df
 
+
 # Load course data
 vector_db, course_df = load_course_db()
 
@@ -73,36 +74,18 @@ generator = pipeline(
 )
 llm = HuggingFacePipeline(pipeline=generator)
 
-def extract_platform(query):
-    platforms = ["udemy", "coursera", "edx"]
-    query_lower = query.lower()
-    for platform in platforms:
-        if f"from {platform}" in query_lower or f"on {platform}" in query_lower:
-            return platform.capitalize()
-    return None
-
 def recommend_courses(query):
     try:
-        platform = extract_platform(query)
-        search_query = re.sub(r'\b(from|on)\s+\w+', '', query, flags=re.IGNORECASE).strip()
-        
-        if platform:
-            platform_courses = course_df[course_df['platform'].str.lower() == platform.lower()]
-            if platform_courses.empty:
-                return [{"error": f"No courses found on {platform}"}]
-            texts = platform_courses['text'].tolist()
-            temp_vector_db = Chroma.from_texts(texts, embeddings)
-            retrieved = temp_vector_db.similarity_search(search_query, k=3)
-        else:
-            retrieved = vector_db.similarity_search(query, k=3)
-
+        # Retrieve top 3 relevant courses
+        retrieved = vector_db.similarity_search(query, k=3)
         courses = []
         for doc in retrieved:
+            # Updated regex to capture platform
             match = re.match(r'^(.*?): (.*?) \| URL: (.*?) \| Platform: (.*)$', doc.page_content)
             if match:
                 courses.append({
                     "title": match.group(1),
-                    "reason": match.group(2) if match.group(2) != "No description" else "Relevant course based on your query",
+                    "reason": match.group(2),
                     "url": match.group(3),
                     "platform": match.group(4)
                 })
@@ -138,10 +121,9 @@ with gr.Blocks(theme=gr.themes.Soft(), title="Multi-Platform Course Bot") as dem
     with gr.Row():
         with gr.Column():
             gr.Markdown("### Get Course Recommendations")
-            gr.Markdown("**Tip**: Add 'from Udemy' or 'on Coursera' to filter results")
             background = gr.Textbox(
                 label="Your background/goals", 
-                placeholder="e.g., 'AI from Udemy' or 'Python on Coursera'",
+                placeholder="e.g., 'CS student interested in AI'",
                 lines=2
             )
             rec_btn = gr.Button("Get Recommendations", variant="primary")
