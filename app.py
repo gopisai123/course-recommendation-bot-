@@ -1,74 +1,52 @@
 import gradio as gr
 import pandas as pd
-import os
 import json
-import time
+import re
 from langchain_community.vectorstores import Chroma
 from langchain_huggingface.embeddings import HuggingFaceEmbeddings
-from langchain_huggingface.llms import HuggingFaceEndpoint
+from transformers import pipeline, AutoTokenizer
 from langchain.chains import RetrievalQA
-from huggingface_hub import login
+from langchain_huggingface import HuggingFacePipeline
 
-# Initialize HF token
-login(token=os.getenv("HUGGINGFACEHUB_API_TOKEN"))
-
-# Initialize embedding model
+# Initialize embedding model (free)
 embeddings = HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
 
 def load_course_db():
     try:
-        # Load course data from CSV
         df = pd.read_csv("courses.csv")
         print(f"Loaded CSV with columns: {df.columns.tolist()}")
-        
-        # Create texts for embedding using available columns
         texts = []
         for _, row in df.iterrows():
-            # Title column
-            title = row.get('title') or row.get('course_title') or row.get('name') or "Untitled Course"
-            
-            # Description column
-            description = row.get('description') or row.get('course_description') or row.get('summary') or "No description available"
-            
-            # Additional metadata
-            level = row.get('Level') or row.get('level') or "Not specified"
-            subject = row.get('subject') or "General"
+            title = row.get('title') or row.get('course_title') or "Untitled Course"
+            description = row.get('description') or row.get('course_description') or "No description"
             url = row.get('url') or row.get('course_url') or "#"
-            
-            text = f"{title}: {description} | Level: {level} | Subject: {subject} | URL: {url}"
+            text = f"{title}: {description} | URL: {url}"
             texts.append(text)
-            
         return Chroma.from_texts(texts, embeddings), df
-        
     except Exception as e:
         print(f"Error loading CSV: {str(e)}")
-        # Fallback to sample data
         sample_courses = [
-            {"title": "Python Fundamentals", "description": "Learn core programming concepts", 
-             "level": "Beginner", "url": "https://example.com/python"},
-            {"title": "Machine Learning", "description": "Deep learning and ML techniques", 
-             "level": "Intermediate", "url": "https://example.com/ml"},
-            {"title": "Data Science", "description": "Data analysis and visualization", 
-             "level": "Intermediate", "url": "https://example.com/ds"},
-            {"title": "Web Development", "description": "Full-stack web development", 
-             "level": "Beginner", "url": "https://example.com/web"},
-            {"title": "Cybersecurity", "description": "Network security and ethical hacking", 
-             "level": "Advanced", "url": "https://example.com/cyber"}
+            {"title": "Python Fundamentals", "description": "Learn programming", "url": "#"},
+            {"title": "Machine Learning", "description": "ML techniques", "url": "#"},
         ]
         df = pd.DataFrame(sample_courses)
-        texts = [f"{row.title}: {row.description} | Level: {row.level} | URL: {row.url}" for _, row in df.iterrows()]
+        texts = [f"{row['title']}: {row['description']} | URL: {row['url']}" for _, row in df.iterrows()]
         return Chroma.from_texts(texts, embeddings), df
 
+# Load course data
 vector_db, course_df = load_course_db()
 
-# Initialize LLM with reliable endpoint
-llm = HuggingFaceEndpoint(
-    endpoint_url="https://api-inference.huggingface.co/models/HuggingFaceH4/zephyr-7b-beta",
-    task="text-generation",
-    temperature=0.5,
-    max_new_tokens=512,
-    huggingfacehub_api_token=os.getenv("HUGGINGFACEHUB_API_TOKEN")
+# Initialize FREE local model (DistilGPT2)
+tokenizer = AutoTokenizer.from_pretrained("distilgpt2")
+generator = pipeline(
+    "text-generation",
+    model="distilgpt2",  # Free, runs locally
+    max_new_tokens=200,
+    max_length=1024,
+    truncation=True,
+    temperature=0.5
 )
+llm = HuggingFacePipeline(pipeline=generator)
 
 def recommend_courses(query):
     try:
@@ -83,34 +61,33 @@ def recommend_courses(query):
         Recommend 3 courses with:
         - Title
         - Reason: Brief justification
-        - Difficulty level
         - Direct URL
-        Format as JSON list: [{{"title": "...", "reason": "...", "level": "...", "url": "..."}}]
+        Format as JSON list: [{{"title": "...", "reason": "...", "url": "..."}}]
         """
         
-        # Get response from LLM
         result = qa.invoke({"query": prompt})
         response = result["result"]
         
-        # Try to parse JSON, fallback to raw text
+        # Enhanced JSON parsing
         try:
-            return json.loads(response)
-        except json.JSONDecodeError:
-            # Improved fallback: Extract courses from text
+            json_match = re.search(r'\[\s*\{.*?\}\s*(?:,\s*\{.*?\}\s*)*\]', response, re.DOTALL)
+            if json_match:
+                return json.loads(json_match.group(0))
+            # Fallback: Manual extraction
             courses = []
-            for line in response.split('\n'):
-                if line.strip() and ('http' in line or 'https' in line):
-                    parts = line.split('-')
-                    if len(parts) > 1:
-                        courses.append({
-                            "title": parts[0].strip(),
-                            "reason": parts[1].split('http')[0].strip(),
-                            "url": line[line.find('http'):].strip()
-                        })
-            return courses if courses else {"recommendations": response, "note": "Response format invalid"}
+            pattern = r'"title":\s*"([^"]+)".*?"reason":\s*"([^"]+)".*?"url":\s*"([^"]+)"'
+            for match in re.finditer(pattern, response, re.DOTALL):
+                courses.append({
+                    "title": match.group(1),
+                    "reason": match.group(2),
+                    "url": match.group(3)
+                })
+            return courses if courses else [{"error": "Could not parse courses"}]
+        except:
+            return [{"error": "JSON parsing failed"}]
             
     except Exception as e:
-        return {"error": f"Recommendation failed: {str(e)}"}
+        return [{"error": f"Recommendation failed: {str(e)}"}]
 
 def generate_learning_path(recommendations):
     try:
@@ -123,7 +100,6 @@ def generate_learning_path(recommendations):
         - Weekly milestones
         - Project suggestions
         - Skills to develop
-        - Estimated time commitment
         Format response as a structured JSON object
         """
         
@@ -140,8 +116,8 @@ def generate_learning_path(recommendations):
         return {"error": f"Learning path generation failed: {str(e)}"}
 
 # Gradio interface
-with gr.Blocks(theme=gr.themes.Soft(), title="Course Recommendation Bot") as demo:
-    gr.Markdown("# 🎓 Smart Course Advisor")
+with gr.Blocks(theme=gr.themes.Soft(), title="Free Course Bot") as demo:
+    gr.Markdown("# 🎓 Free Course Recommender")
     
     with gr.Row():
         with gr.Column():
