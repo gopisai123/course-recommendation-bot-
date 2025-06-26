@@ -16,22 +16,54 @@ login(token=os.getenv("HUGGINGFACEHUB_API_TOKEN"))
 embeddings = HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
 
 def load_course_db():
-    # ... (keep your existing load_course_db implementation) ...
+    try:
+        df = pd.read_csv("courses.csv")
+        print(f"Loaded CSV with columns: {df.columns.tolist()}")
+        texts = []
+        for _, row in df.iterrows():
+            title = row.get('title') or row.get('course_title') or "Untitled Course"
+            description = row.get('description') or row.get('course_description') or "No description available"
+            if len(str(description)) > 150:
+                description = str(description)[:147] + "..."
+            level = row.get('Level') or row.get('level') or "Not specified"
+            url = row.get('url') or row.get('course_url') or "#"
+            text = f"{title}: {description} | Level: {level} | URL: {url}"
+            texts.append(text)
+        return Chroma.from_texts(texts, embeddings), df
+    except Exception as e:
+        print(f"Error loading CSV: {str(e)}")
+        sample_courses = [
+            {"title": "Python Fundamentals", "description": "Learn programming", "level": "Beginner", "url": "https://example.com/python"},
+            {"title": "Machine Learning", "description": "ML techniques", "level": "Intermediate", "url": "https://example.com/ml"},
+        ]
+        df = pd.DataFrame(sample_courses)
+        texts = [f"{row['title']}: {row['description']} | Level: {row['level']} | URL: {row['url']}" for _, row in df.iterrows()]
+        return Chroma.from_texts(texts, embeddings), df
 
+# Load course data
 vector_db, course_df = load_course_db()
 
-# Initialize LLM with JSON-enforcing parameters
+# Initialize LLM
 llm = HuggingFaceEndpoint(
     endpoint_url="https://api-inference.huggingface.co/models/gpt2",
     task="text-generation",
-    temperature=0.3,  # Lower temperature for more predictable output
+    temperature=0.3,
     max_new_tokens=200,
-    repetition_penalty=1.2,  # Reduces repetition
+    repetition_penalty=1.2,
     huggingfacehub_api_token=os.getenv("HUGGINGFACEHUB_API_TOKEN")
 )
 
+# Implement the missing function
 def extract_number_from_query(query, default=3):
-    # ... (keep your existing implementation) ...
+    """Extract number of courses from query or return default"""
+    try:
+        # Look for numbers in query
+        numbers = re.findall(r'\d+', query)
+        if numbers:
+            return int(numbers[0])
+        return default
+    except:
+        return default
 
 def recommend_courses(query, level):
     try:
@@ -50,7 +82,6 @@ def recommend_courses(query, level):
             retriever=retriever
         )
         
-        # Revised prompt with JSON schema enforcement
         prompt = f"""
         User background: "{query}"
         Recommend exactly {num_courses} {level}-level courses in JSON format with:
@@ -74,14 +105,11 @@ def recommend_courses(query, level):
         result = qa.invoke({"query": prompt})
         response = result["result"]
         
-        # Enhanced JSON extraction
         try:
-            # Find first valid JSON array
             json_match = re.search(r'\[\s*\{.*?\}\s*(?:,\s*\{.*?\}\s*)*\]', response, re.DOTALL)
             if json_match:
                 return json.loads(json_match.group(0))
             
-            # Fallback: Manual key-value extraction
             courses = []
             pattern = r'"title":\s*"([^"]+)".*?"reason":\s*"([^"]+)".*?"level":\s*"([^"]+)".*?"url":\s*"([^"]+)"'
             for match in re.finditer(pattern, response, re.DOTALL):
@@ -98,8 +126,6 @@ def recommend_courses(query, level):
             
     except Exception as e:
         return [{"error": f"System error: {str(e)}"}]
-
-# ... (keep your existing generate_learning_path and Gradio interface) ...
 
 def generate_learning_path(recommendations):
     try:
