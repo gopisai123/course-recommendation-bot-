@@ -2,7 +2,7 @@ import gradio as gr
 import pandas as pd
 import os
 import json
-import re
+import time
 from langchain_community.vectorstores import Chroma
 from langchain_huggingface.embeddings import HuggingFaceEmbeddings
 from langchain_huggingface.llms import HuggingFaceEndpoint
@@ -21,91 +21,66 @@ def load_course_db():
         df = pd.read_csv("courses.csv")
         print(f"Loaded CSV with columns: {df.columns.tolist()}")
         
-        # Create texts and metadata for embedding
+        # Create texts for embedding using available columns
         texts = []
-        metadatas = []
         for _, row in df.iterrows():
-            # Extract data
+            # Title column
             title = row.get('title') or row.get('course_title') or row.get('name') or "Untitled Course"
+            
+            # Description column
             description = row.get('description') or row.get('course_description') or row.get('summary') or "No description available"
-            level = (row.get('Level') or row.get('level') or "Not specified").lower()
+            
+            # Additional metadata
+            level = row.get('Level') or row.get('level') or "Not specified"
             subject = row.get('subject') or "General"
             url = row.get('url') or row.get('course_url') or "#"
             
-            # Prepare data for vector store
-            text = f"{title}: {description}"
-            metadata = {"level": level, "subject": subject, "url": url}
-            
+            text = f"{title}: {description} | Level: {level} | Subject: {subject} | URL: {url}"
             texts.append(text)
-            metadatas.append(metadata)
             
-        return Chroma.from_texts(texts, embeddings, metadatas=metadatas), df
+        return Chroma.from_texts(texts, embeddings), df
         
     except Exception as e:
         print(f"Error loading CSV: {str(e)}")
         # Fallback to sample data
         sample_courses = [
             {"title": "Python Fundamentals", "description": "Learn core programming concepts", 
-             "level": "beginner", "url": "https://example.com/python"},
+             "level": "Beginner", "url": "https://example.com/python"},
             {"title": "Machine Learning", "description": "Deep learning and ML techniques", 
-             "level": "intermediate", "url": "https://example.com/ml"},
+             "level": "Intermediate", "url": "https://example.com/ml"},
             {"title": "Data Science", "description": "Data analysis and visualization", 
-             "level": "intermediate", "url": "https://example.com/ds"},
+             "level": "Intermediate", "url": "https://example.com/ds"},
             {"title": "Web Development", "description": "Full-stack web development", 
-             "level": "beginner", "url": "https://example.com/web"},
+             "level": "Beginner", "url": "https://example.com/web"},
             {"title": "Cybersecurity", "description": "Network security and ethical hacking", 
-             "level": "advanced", "url": "https://example.com/cyber"}
+             "level": "Advanced", "url": "https://example.com/cyber"}
         ]
         df = pd.DataFrame(sample_courses)
-        
-        texts = []
-        metadatas = []
-        for _, row in df.iterrows():
-            text = f"{row.title}: {row.description}"
-            metadata = {"level": row.level, "url": row.url}
-            texts.append(text)
-            metadatas.append(metadata)
-            
-        return Chroma.from_texts(texts, embeddings, metadatas=metadatas), df
+        texts = [f"{row.title}: {row.description} | Level: {row.level} | URL: {row.url}" for _, row in df.iterrows()]
+        return Chroma.from_texts(texts, embeddings), df
 
 vector_db, course_df = load_course_db()
 
 # Initialize LLM with reliable endpoint
 llm = HuggingFaceEndpoint(
-    endpoint_url="https://api-inference.huggingface.co/models/gpt2",
+    endpoint_url="https://api-inference.huggingface.co/models/HuggingFaceH4/zephyr-7b-beta",
     task="text-generation",
-    temperature=0.7,
-    max_new_tokens=128,  # You can increase if needed, but 128 is fast and safe
+    temperature=0.5,
+    max_new_tokens=512,
     huggingfacehub_api_token=os.getenv("HUGGINGFACEHUB_API_TOKEN")
 )
 
-def extract_number_from_query(query, default=3):
-    """Extract requested number of courses from user query"""
-    match = re.search(r"\b(\d+)\b", query)
-    return int(match.group(1)) if match else default
-
-def recommend_courses(query, level):
+def recommend_courses(query):
     try:
-        # Determine number of courses requested
-        num_courses = extract_number_from_query(query)
-        
-        # Configure retriever with level filter
-        retriever = vector_db.as_retriever(
-            search_kwargs={
-                "k": num_courses,
-                "filter": {"level": level.lower()}
-            }
-        )
-        
         qa = RetrievalQA.from_chain_type(
             llm=llm,
             chain_type="stuff",
-            retriever=retriever
+            retriever=vector_db.as_retriever(search_kwargs={"k": 3})
         )
         
         prompt = f"""
         Based on user background: "{query}"
-        Recommend {num_courses} {level}-level courses with:
+        Recommend 3 courses with:
         - Title
         - Reason: Brief justification
         - Difficulty level
@@ -121,7 +96,7 @@ def recommend_courses(query, level):
         try:
             return json.loads(response)
         except json.JSONDecodeError:
-            # Extract courses from text
+            # Improved fallback: Extract courses from text
             courses = []
             for line in response.split('\n'):
                 if line.strip() and ('http' in line or 'https' in line):
@@ -143,13 +118,13 @@ def generate_learning_path(recommendations):
             return {"error": "Please provide course names"}
             
         prompt = f"""
-        Create a practical 3-month learning plan for: {recommendations}
+        Create a 3-month learning plan for these courses: {recommendations}
         Include:
-        - 12 weekly milestones
-        - 2-3 hands-on projects
-        - Skills to develop each month
-        - Estimated weekly time commitment
-        Format response as JSON with keys: ["weeks", "projects", "skills", "time_commitment"]
+        - Weekly milestones
+        - Project suggestions
+        - Skills to develop
+        - Estimated time commitment
+        Format response as a structured JSON object
         """
         
         qa = RetrievalQA.from_chain_type(
@@ -176,11 +151,6 @@ with gr.Blocks(theme=gr.themes.Soft(), title="Course Recommendation Bot") as dem
                 placeholder="e.g., 'CS student interested in AI'",
                 lines=2
             )
-            level_selector = gr.Radio(
-                choices=["Beginner", "Intermediate", "Advanced"],
-                value="Beginner",
-                label="Select difficulty level"
-            )
             rec_btn = gr.Button("Get Recommendations", variant="primary")
             rec_output = gr.JSON(label="Recommended Courses")
         
@@ -196,7 +166,7 @@ with gr.Blocks(theme=gr.themes.Soft(), title="Course Recommendation Bot") as dem
     
     rec_btn.click(
         fn=recommend_courses,
-        inputs=[background, level_selector],
+        inputs=background,
         outputs=rec_output
     )
     
