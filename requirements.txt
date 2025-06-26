@@ -1,4 +1,4 @@
-gradio==4.22.1
+gradio==5.33.2
 langchain-core==0.3.66
 langchain-community==0.2.3
 langchain-huggingface==0.0.2
