@@ -1,6 +1,8 @@
 import gradio as gr
 import pandas as pd
 import re
+import os
+import time
 from langchain_community.vectorstores import Chroma
 from langchain_huggingface.embeddings import HuggingFaceEmbeddings
 from transformers import pipeline, AutoTokenizer
@@ -9,8 +11,13 @@ from langchain_huggingface import HuggingFacePipeline
 # Initialize embedding model
 embeddings = HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
 
-def load_course_db():
-    try:
+# Check if precomputed vector database exists
+VECTOR_DB_DIR = "vector_db"
+if not os.path.exists(VECTOR_DB_DIR):
+    print("Building vector database...")
+    start_time = time.time()
+    
+    def load_course_db():
         csv_files = [
             ("courses.csv", "edX"),
             ("coursera_data.csv", "Coursera"),
@@ -25,6 +32,7 @@ def load_course_db():
                     title = row.get('title') or row.get('course_title') or "Untitled Course"
                     description = row.get('description') or row.get('course_description') or row.get('subject') or "No description"
                     url = row.get('url') or row.get('link') or "#"
+                    
                     # Generate URL if missing
                     if url == "#" or pd.isna(url):
                         slug = re.sub(r'[^\w\s-]', '', title).strip().lower().replace(' ', '-')
@@ -32,7 +40,14 @@ def load_course_db():
                             url = f"https://www.coursera.org/learn/{slug}"
                         elif platform == "Udemy":
                             url = f"https://www.udemy.com/course/{slug}/"
-                    plat = row['platform']
+                        elif platform == "edX":
+                            url = f"https://www.edx.org/course/{slug}"
+                    
+                    # Improve description if missing
+                    if description in ["No description", "", None]:
+                        description = f"Comprehensive course on {title.split(':')[0]}"
+                    
+                    plat = platform
                     text = f"{title}: {description} | URL: {url} | Platform: {plat}"
                     all_courses.append({
                         "title": title,
@@ -47,20 +62,15 @@ def load_course_db():
             raise ValueError("No courses loaded from any file.")
         texts = [c["text"] for c in all_courses]
         df = pd.DataFrame(all_courses)
-        return Chroma.from_texts(texts, embeddings), df
-    except Exception as e:
-        print(f"Error loading datasets: {str(e)}")
-        sample_courses = [
-            {"title": "Python Fundamentals", "description": "Learn programming", "url": "#", "platform": "Sample"},
-            {"title": "Machine Learning", "description": "ML techniques", "url": "#", "platform": "Sample"},
-        ]
-        df = pd.DataFrame(sample_courses)
-        texts = [f"{row['title']}: {row['description']} | URL: {row['url']} | Platform: {row['platform']}" for _, row in df.iterrows()]
-        return Chroma.from_texts(texts, embeddings), df
-
-
-# Load course data
-vector_db, course_df = load_course_db()
+        return Chroma.from_texts(texts, embeddings, persist_directory=VECTOR_DB_DIR), df
+    
+    vector_db, course_df = load_course_db()
+    vector_db.persist()
+    print(f"Vector database built in {time.time()-start_time:.2f} seconds")
+else:
+    print("Loading precomputed vector database...")
+    vector_db = Chroma(persist_directory=VECTOR_DB_DIR, embedding_function=embeddings)
+    course_df = pd.read_csv("combined_courses.csv")  # Created during first run
 
 # Initialize local model
 tokenizer = AutoTokenizer.from_pretrained("distilgpt2")
@@ -74,20 +84,54 @@ generator = pipeline(
 )
 llm = HuggingFacePipeline(pipeline=generator)
 
+def extract_platform(query):
+    platforms = ["udemy", "coursera", "edx"]
+    query_lower = query.lower()
+    for platform in platforms:
+        if f"from {platform}" in query_lower or f"on {platform}" in query_lower:
+            return platform.capitalize()
+    return None
+
 def recommend_courses(query):
     try:
-        # Retrieve top 3 relevant courses
-        retrieved = vector_db.similarity_search(query, k=3)
+        platform = extract_platform(query)
+        search_query = re.sub(r'\b(from|on)\s+\w+', '', query, flags=re.IGNORECASE).strip()
+        
+        if platform:
+            platform_courses = course_df[course_df['platform'].str.lower() == platform.lower()]
+            if platform_courses.empty:
+                return [{"error": f"No courses found on {platform}"}]
+            texts = platform_courses['text'].tolist()
+            temp_vector_db = Chroma.from_texts(texts, embeddings)
+            retrieved = temp_vector_db.similarity_search(search_query, k=3)
+        else:
+            retrieved = vector_db.similarity_search(query, k=3)
+
         courses = []
         for doc in retrieved:
-            # Updated regex to capture platform
             match = re.match(r'^(.*?): (.*?) \| URL: (.*?) \| Platform: (.*)$', doc.page_content)
             if match:
+                title, reason, url, platform = match.groups()
+                
+                # Ensure URL is valid
+                if url in ["#", "", None]:
+                    slug = re.sub(r'[^\w\s-]', '', title).strip().lower().replace(' ', '-')
+                    if platform == "Coursera":
+                        url = f"https://www.coursera.org/learn/{slug}"
+                    elif platform == "Udemy":
+                        url = f"https://www.udemy.com/course/{slug}/"
+                    elif platform == "edX":
+                        url = f"https://www.edx.org/course/{slug}"
+                
+                # Improve reason if missing
+                if reason in ["No description", "", None]:
+                    reason = f"Comprehensive course on {title.split(':')[0]}"
+                
                 courses.append({
-                    "title": match.group(1),
-                    "reason": match.group(2),
-                    "url": match.group(3),
-                    "platform": match.group(4)
+                    "title": title,
+                    "reason": reason,
+                    "url": url,
+                    "platform": platform
                 })
         return courses if courses else [{"error": "No courses found"}]
     except Exception as e:
@@ -116,14 +160,15 @@ def generate_learning_path(recommendations):
         return {"error": f"Learning path generation failed: {str(e)}"}
 
 # Gradio interface
-with gr.Blocks(theme=gr.themes.Soft(), title="Multi-Platform Course Bot") as demo:
-    gr.Markdown("# 🎓 Multi-Platform Course Recommender")
+with gr.Blocks(theme=gr.themes.Soft(), title="Course Recommendation Bot") as demo:
+    gr.Markdown("# 🎓 Smart Course Advisor")
     with gr.Row():
         with gr.Column():
             gr.Markdown("### Get Course Recommendations")
+            gr.Markdown("**Tip**: Add 'from Udemy' or 'on Coursera' to filter results")
             background = gr.Textbox(
                 label="Your background/goals", 
-                placeholder="e.g., 'CS student interested in AI'",
+                placeholder="e.g., 'AI from Udemy' or 'Python on Coursera'",
                 lines=2
             )
             rec_btn = gr.Button("Get Recommendations", variant="primary")
