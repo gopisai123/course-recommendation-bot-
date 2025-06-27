@@ -206,28 +206,45 @@ def recommend_courses(query):
         return [{"error": f"System error: {str(e)}"}]
 
 def generate_learning_path(recommendations):
-    """Generate learning path for selected courses"""
+    """Generate learning path for selected courses with robust validation"""
     try:
         if not recommendations or not recommendations.strip():
             return {"error": "Please provide course names"}
         
-        # First check if we have a predefined learning path
-        for path_name, path_data in learning_paths.items():
-            if recommendations.lower() in path_name.lower():
-                return {
-                    "path_name": path_name,
-                    "steps": path_data
-                }
+        # Limit to 3 courses to avoid overwhelming the model
+        courses = [c.strip() for c in recommendations.split(",")][:3]
+        course_list = ", ".join(courses)
         
-        # If no predefined path found, generate with LLM
+        # Enhanced prompt with JSON structure example
         prompt = f"""
-        Create a detailed 3-month learning plan for these courses: {recommendations}
-        Structure your response with:
-        - Overview of learning journey
-        - Weekly schedule with topics/resources
-        - Practical projects
-        - Skills developed
-        - Recommended assessments
+        Create a detailed 3-month learning plan for these courses: {course_list}
+        Structure your response as a JSON object with these keys:
+        - "overview": (1-paragraph summary of the learning journey)
+        - "weekly_schedule": (list of 12 weekly plans with topics/resources)
+        - "projects": (list of 3 milestone projects)
+        - "skills_developed": (list of skills gained)
+        - "resources": (list of relevant resource URLs)
+        
+        Example valid JSON format:
+        {{
+          "overview": "This path teaches...",
+          "weekly_schedule": [
+            "Week 1: Topic A - Resource1, Resource2",
+            "Week 2: Topic B - Resource3"
+          ],
+          "projects": [
+            "Project 1: Description",
+            "Project 2: Description"
+          ],
+          "skills_developed": ["Skill1", "Skill2"],
+          "resources": ["https://resource1", "https://resource2"]
+        }}
+        
+        Important:
+        - Focus only on the provided courses
+        - Include practical projects
+        - Suggest real learning resources
+        - Maintain logical progression
         """
         
         qa = RetrievalQA.from_chain_type(
@@ -237,10 +254,37 @@ def generate_learning_path(recommendations):
         )
         
         result = qa.invoke({"query": prompt})
-        return {"learning_path": result["result"]}
+        response = result["result"]
+        
+        # Attempt to extract JSON
+        try:
+            # Look for JSON code block
+            json_match = re.search(r'``````', response, re.DOTALL)
+            if json_match:
+                return json.loads(json_match.group(1))
+            
+            # Try parsing as raw JSON
+            return json.loads(response)
+        except:
+            # Fallback: Use predefined path if available
+            for path_name in learning_paths.keys():
+                if any(course.lower() in path_name.lower() for course in courses):
+                    return {
+                        "path_name": path_name,
+                        "steps": learning_paths[path_name],
+                        "note": "Custom path unavailable. Showing closest match."
+                    }
+            
+            # Final fallback: Error message
+            return {
+                "error": "Couldn't generate custom path",
+                "suggestion": "Try fewer courses or select a predefined path",
+                "raw_response": response[:500] + "..." if len(response) > 500 else response
+            }
         
     except Exception as e:
         return {"error": f"Learning path generation failed: {str(e)}"}
+
 
 # Gradio interface
 with gr.Blocks(theme=gr.themes.Soft(), title="Course Learning Advisor") as demo:
