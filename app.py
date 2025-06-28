@@ -2,6 +2,7 @@ import gradio as gr
 import pandas as pd
 import re
 import os
+import difflib
 import numpy as np
 from langchain_community.vectorstores import Chroma
 from langchain_huggingface.embeddings import HuggingFaceEmbeddings
@@ -123,7 +124,7 @@ def recommend_courses(query):
 
 def generate_learning_path(recommendations):
     try:
-        if not recommendations.strip():
+        if not recommendations or not recommendations.strip():
             return {"error": "Please provide course names"}
         
         course_name = recommendations.split(",")[0].strip().lower()
@@ -132,13 +133,13 @@ def generate_learning_path(recommendations):
         if course_name in learning_paths_dict:
             return {"course": course_name, "path": learning_paths_dict[course_name]}
         
-        # 2. Remove extra words (e.g., "roadmap", "course")
-        base_name = re.sub(r'\b(roadmap|course|path|guide|tutorial|learning)\b', '', course_name).strip()
-        if base_name in learning_paths_dict:
-            return {"course": base_name, "path": learning_paths_dict[base_name]}
+        # 2. Remove common keywords
+        clean_name = re.sub(r'\b(roadmap|course|path|guide|tutorial|learning)\b', '', course_name).strip()
+        if clean_name in learning_paths_dict:
+            return {"course": clean_name, "path": learning_paths_dict[clean_name]}
         
         # 3. Fuzzy match
-        matches = get_close_matches(base_name, learning_paths_dict.keys(), n=1, cutoff=0.7)
+        matches = difflib.get_close_matches(clean_name, learning_paths_dict.keys(), n=1, cutoff=0.7)
         if matches:
             return {"course": matches[0], "path": learning_paths_dict[matches[0]]}
         
@@ -151,16 +152,18 @@ def generate_learning_path(recommendations):
         - Skills to develop
         Format response as a structured JSON object
         """
+        
         qa = RetrievalQA.from_chain_type(
             llm=llm,
             chain_type="stuff",
             retriever=vector_db.as_retriever()
         )
+        
         result = qa.invoke({"query": prompt})
         return {"learning_path": result["result"]}
-        
     except Exception as e:
         return {"error": f"Learning path generation failed: {str(e)}"}
+
 
 # Gradio interface
 with gr.Blocks(theme=gr.themes.Soft(), title="Course Learning Advisor") as demo:
