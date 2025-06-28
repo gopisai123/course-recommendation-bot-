@@ -62,15 +62,17 @@ def load_course_db():
                     description = row.get('description') or row.get('course_description') or row.get('subject') or "No description"
                     url = row.get('url') or row.get('link') or "#"
                     
-                    # Generate URL if missing
-                    if url == "#" or pd.isna(url):
+                    # Enhanced URL validation and generation
+                    if url == "#" or pd.isna(url) or not str(url).startswith("http"):
                         slug = re.sub(r'[^\w\s-]', '', title).strip().lower().replace(' ', '-')
                         if platform == "Coursera":
                             url = f"https://www.coursera.org/learn/{slug}"
                         elif platform == "Udemy":
                             url = f"https://www.udemy.com/course/{slug}/"
+                        else:
+                            # For other platforms, try to create a valid URL
+                            url = f"https://example.com/course/{slug}" if slug else "#"
                     
-                    # Create course text - more robust format
                     text = f"TITLE: {title} | DESCRIPTION: {description} | URL: {url} | PLATFORM: {platform}"
                     all_courses.append({
                         "title": title,
@@ -88,11 +90,10 @@ def load_course_db():
         return Chroma.from_texts(texts, embeddings), df
     except Exception as e:
         print(f"Error loading datasets: {str(e)}")
-        # Enhanced sample data
         sample_courses = [
-            {"title": "Machine Learning Fundamentals", "description": "Introduction to ML algorithms", "url": "#", "platform": "Sample"},
-            {"title": "Advanced Machine Learning", "description": "Deep learning and neural networks", "url": "#", "platform": "Sample"},
-            {"title": "Python for Data Science", "description": "Using Python for ML applications", "url": "#", "platform": "Sample"},
+            {"title": "Machine Learning", "description": "Introduction to ML algorithms", "url": "https://example.com/ml", "platform": "Sample"},
+            {"title": "Data Science Fundamentals", "description": "Core data science concepts", "url": "https://example.com/ds", "platform": "Sample"},
+            {"title": "Python Programming", "description": "Learn Python from scratch", "url": "https://example.com/python", "platform": "Sample"},
         ]
         df = pd.DataFrame(sample_courses)
         texts = [f"TITLE: {row['title']} | DESCRIPTION: {row['description']} | URL: {row['url']} | PLATFORM: {row['platform']}" for _, row in df.iterrows()]
@@ -115,26 +116,38 @@ llm = HuggingFacePipeline(pipeline=generator)
 
 def recommend_courses(query):
     try:
-        # Increase results to 5 for better coverage
         retrieved = vector_db.similarity_search(query, k=5)
         courses = []
         for doc in retrieved:
-            # More robust parsing with explicit field labels
             content = doc.page_content
+            # Robust parsing with error handling
             title_match = re.search(r'TITLE: (.*?) \| DESCRIPTION:', content)
             desc_match = re.search(r'DESCRIPTION: (.*?) \| URL:', content)
             url_match = re.search(r'URL: (.*?) \| PLATFORM:', content)
             platform_match = re.search(r'PLATFORM: (.*?)$', content)
             
-            if title_match and desc_match and url_match and platform_match:
-                courses.append({
-                    "title": title_match.group(1).strip(),
-                    "reason": desc_match.group(1).strip(),
-                    "url": url_match.group(1).strip(),
-                    "platform": platform_match.group(1).strip()
-                })
+            if all([title_match, desc_match, url_match, platform_match]):
+                title = title_match.group(1).strip()
+                description = desc_match.group(1).strip()
+                url = url_match.group(1).strip()
+                platform = platform_match.group(1).strip()
                 
-        return courses if courses else [{"error": "No courses found. Try different keywords."}]
+                # Only include courses with valid URLs
+                if url.startswith("http"):
+                    courses.append({
+                        "title": title,
+                        "reason": description,
+                        "url": url,
+                        "platform": platform
+                    })
+                else:
+                    print(f"Skipping course with invalid URL: {title} - {url}")
+        
+        if courses:
+            return courses
+        else:
+            return [{"error": "No valid courses found. Try different keywords."}]
+            
     except Exception as e:
         return [{"error": f"System error: {str(e)}"}]
 
@@ -203,7 +216,7 @@ with gr.Blocks(theme=gr.themes.Soft(), title="Course Learning Advisor") as demo:
             gr.Markdown("### Get Learning Roadmap")
             path_input = gr.Textbox(
                 label="Course name",
-                placeholder="e.g., Machine Learning Fundamentals"
+                placeholder="e.g., Machine Learning"
             )
             path_btn = gr.Button("Generate Learning Path", variant="primary")
             path_output = gr.JSON(label="Learning Roadmap")
