@@ -18,7 +18,6 @@ learning_paths_dict = {}
 learning_path_names = []
 
 def safe_split(value, delimiter=';'):
-    """Safely split values handling NaN and empty cases"""
     if pd.isna(value) or value == "":
         return []
     return [v.strip() for v in str(value).split(delimiter) if v.strip()]
@@ -35,7 +34,6 @@ if os.path.exists(LEARNING_PATHS_CSV):
         }
         learning_path_names.append(course_name)
     print(f"Loaded {len(learning_paths_dict)} learning paths from CSV")
-    
     # Create vector store for path names
     path_vector_db = Chroma.from_texts(
         texts=learning_path_names,
@@ -48,7 +46,7 @@ else:
 def load_course_db():
     try:
         csv_files = [
-            ("edx_courses.csv", "edX"),
+            ("courses.csv", "General"),
             ("coursera_data.csv", "Coursera"),
             ("udemy_courses.csv", "Udemy")
         ]
@@ -58,19 +56,22 @@ def load_course_db():
                 if not os.path.exists(filename):
                     print(f"Skipping missing file: {filename}")
                     continue
-                    
                 df = pd.read_csv(filename)
                 for _, row in df.iterrows():
                     title = row.get('title') or row.get('course_title') or "Untitled Course"
                     description = row.get('description') or row.get('course_description') or row.get('subject') or "No description"
                     url = row.get('url') or row.get('link') or "#"
+                    
+                    # Generate URL if missing
                     if url == "#" or pd.isna(url):
                         slug = re.sub(r'[^\w\s-]', '', title).strip().lower().replace(' ', '-')
                         if platform == "Coursera":
                             url = f"https://www.coursera.org/learn/{slug}"
                         elif platform == "Udemy":
                             url = f"https://www.udemy.com/course/{slug}/"
-                    text = f"{title}: {description} | URL: {url} | Platform: {platform}"
+                    
+                    # Create course text - more robust format
+                    text = f"TITLE: {title} | DESCRIPTION: {description} | URL: {url} | PLATFORM: {platform}"
                     all_courses.append({
                         "title": title,
                         "description": description,
@@ -87,12 +88,14 @@ def load_course_db():
         return Chroma.from_texts(texts, embeddings), df
     except Exception as e:
         print(f"Error loading datasets: {str(e)}")
+        # Enhanced sample data
         sample_courses = [
-            {"title": "Python Fundamentals", "description": "Learn programming", "url": "#", "platform": "Sample"},
-            {"title": "Machine Learning", "description": "ML techniques", "url": "#", "platform": "Sample"},
+            {"title": "Machine Learning Fundamentals", "description": "Introduction to ML algorithms", "url": "#", "platform": "Sample"},
+            {"title": "Advanced Machine Learning", "description": "Deep learning and neural networks", "url": "#", "platform": "Sample"},
+            {"title": "Python for Data Science", "description": "Using Python for ML applications", "url": "#", "platform": "Sample"},
         ]
         df = pd.DataFrame(sample_courses)
-        texts = [f"{row['title']}: {row['description']} | URL: {row['url']} | Platform: {row['platform']}" for _, row in df.iterrows()]
+        texts = [f"TITLE: {row['title']} | DESCRIPTION: {row['description']} | URL: {row['url']} | PLATFORM: {row['platform']}" for _, row in df.iterrows()]
         return Chroma.from_texts(texts, embeddings), df
 
 # Load course data
@@ -112,18 +115,26 @@ llm = HuggingFacePipeline(pipeline=generator)
 
 def recommend_courses(query):
     try:
-        retrieved = vector_db.similarity_search(query, k=3)
+        # Increase results to 5 for better coverage
+        retrieved = vector_db.similarity_search(query, k=5)
         courses = []
         for doc in retrieved:
-            match = re.match(r'^(.*?): (.*?) \| URL: (.*?) \| Platform: (.*)$', doc.page_content)
-            if match:
+            # More robust parsing with explicit field labels
+            content = doc.page_content
+            title_match = re.search(r'TITLE: (.*?) \| DESCRIPTION:', content)
+            desc_match = re.search(r'DESCRIPTION: (.*?) \| URL:', content)
+            url_match = re.search(r'URL: (.*?) \| PLATFORM:', content)
+            platform_match = re.search(r'PLATFORM: (.*?)$', content)
+            
+            if title_match and desc_match and url_match and platform_match:
                 courses.append({
-                    "title": match.group(1),
-                    "reason": match.group(2),
-                    "url": match.group(3),
-                    "platform": match.group(4)
+                    "title": title_match.group(1).strip(),
+                    "reason": desc_match.group(1).strip(),
+                    "url": url_match.group(1).strip(),
+                    "platform": platform_match.group(1).strip()
                 })
-        return courses if courses else [{"error": "No courses found"}]
+                
+        return courses if courses else [{"error": "No courses found. Try different keywords."}]
     except Exception as e:
         return [{"error": f"System error: {str(e)}"}]
 
@@ -131,9 +142,7 @@ def generate_learning_path(recommendations):
     try:
         if not recommendations.strip():
             return {"error": "Please provide course names"}
-        
         course_name = recommendations.split(",")[0].strip().lower()
-        
         # 1. Semantic search in learning paths
         if path_vector_db:
             results = path_vector_db.similarity_search(course_name, k=1)
@@ -145,7 +154,6 @@ def generate_learning_path(recommendations):
                         "matched_path": matched_path,
                         "path": learning_paths_dict[matched_path]
                     }
-        
         # 2. Fuzzy match
         matches = difflib.get_close_matches(
             course_name, 
@@ -159,7 +167,6 @@ def generate_learning_path(recommendations):
                 "matched_path": matches[0],
                 "path": learning_paths_dict[matches[0]]
             }
-        
         # 3. Fallback to LLM
         prompt = f"""
         Create a 3-month learning plan for: {course_name}
@@ -169,13 +176,11 @@ def generate_learning_path(recommendations):
         - Skills to develop
         Format response as a structured JSON object
         """
-        
         qa = RetrievalQA.from_chain_type(
             llm=llm,
             chain_type="stuff",
             retriever=vector_db.as_retriever()
         )
-        
         result = qa.invoke({"query": prompt})
         return {"learning_path": result["result"]}
     except Exception as e:
@@ -189,7 +194,7 @@ with gr.Blocks(theme=gr.themes.Soft(), title="Course Learning Advisor") as demo:
             gr.Markdown("### Get Course Recommendations")
             background = gr.Textbox(
                 label="Your learning goals", 
-                placeholder="e.g., 'Python for beginners' or 'Data Science'",
+                placeholder="e.g., 'Machine learning' or 'Data Science'",
                 lines=2
             )
             rec_btn = gr.Button("Get Recommendations", variant="primary")
@@ -198,7 +203,7 @@ with gr.Blocks(theme=gr.themes.Soft(), title="Course Learning Advisor") as demo:
             gr.Markdown("### Get Learning Roadmap")
             path_input = gr.Textbox(
                 label="Course name",
-                placeholder="e.g., Python Fundamentals"
+                placeholder="e.g., Machine Learning Fundamentals"
             )
             path_btn = gr.Button("Generate Learning Path", variant="primary")
             path_output = gr.JSON(label="Learning Roadmap")
