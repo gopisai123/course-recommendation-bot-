@@ -1,7 +1,9 @@
+import os
+os.environ["ANONYMIZED_TELEMETRY"] = "False"  # Disable Chroma telemetry
+
 import gradio as gr
 import pandas as pd
 import re
-import os
 import difflib
 from langchain_community.vectorstores import Chroma
 from langchain_huggingface.embeddings import HuggingFaceEmbeddings
@@ -61,7 +63,6 @@ def load_course_db():
                     title = row.get('title') or row.get('course_title') or "Untitled Course"
                     description = row.get('description') or row.get('course_description') or row.get('subject') or "No description"
                     url = row.get('url') or row.get('link') or "#"
-                    
                     # Enhanced URL validation and generation
                     if url == "#" or pd.isna(url) or not str(url).startswith("http"):
                         slug = re.sub(r'[^\w\s-]', '', title).strip().lower().replace(' ', '-')
@@ -70,9 +71,7 @@ def load_course_db():
                         elif platform == "Udemy":
                             url = f"https://www.udemy.com/course/{slug}/"
                         else:
-                            # For other platforms, try to create a valid URL
                             url = f"https://example.com/course/{slug}" if slug else "#"
-                    
                     text = f"TITLE: {title} | DESCRIPTION: {description} | URL: {url} | PLATFORM: {platform}"
                     all_courses.append({
                         "title": title,
@@ -125,13 +124,11 @@ def recommend_courses(query):
             desc_match = re.search(r'DESCRIPTION: (.*?) \| URL:', content)
             url_match = re.search(r'URL: (.*?) \| PLATFORM:', content)
             platform_match = re.search(r'PLATFORM: (.*?)$', content)
-            
             if all([title_match, desc_match, url_match, platform_match]):
                 title = title_match.group(1).strip()
                 description = desc_match.group(1).strip()
                 url = url_match.group(1).strip()
                 platform = platform_match.group(1).strip()
-                
                 # Only include courses with valid URLs
                 if url.startswith("http"):
                     courses.append({
@@ -142,12 +139,10 @@ def recommend_courses(query):
                     })
                 else:
                     print(f"Skipping course with invalid URL: {title} - {url}")
-        
         if courses:
             return courses
         else:
             return [{"error": "No valid courses found. Try different keywords."}]
-            
     except Exception as e:
         return [{"error": f"System error: {str(e)}"}]
 
