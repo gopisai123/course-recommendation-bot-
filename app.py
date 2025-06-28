@@ -2,7 +2,6 @@ import gradio as gr
 import pandas as pd
 import re
 import os
-import time
 import json
 from langchain_community.vectorstores import Chroma
 from langchain_huggingface.embeddings import HuggingFaceEmbeddings
@@ -16,33 +15,33 @@ embeddings = HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-
 # Configuration
 VECTOR_DB_DIR = "vector_db"
 COMBINED_CSV = "combined_courses.csv"
-LEARNING_PATH_CSV = "Learning_Pathway_Index.csv"  # Fixed filename with capital 'P'
+LEARNING_PATH_CSV = "Learning_Pathway_Index.csv"
 
 def load_learning_paths():
     """Load and structure learning paths from CSV"""
     try:
-        # Check if file exists
         if not os.path.exists(LEARNING_PATH_CSV):
-            print(f"Learning path file not found: {LEARNING_PATH_CSV}")
             return {}
         
         df = pd.read_csv(LEARNING_PATH_CSV)
+        path_dict = {}
+        
         # Group by Module_Code to create complete paths
-        grouped = df.groupby('Module_Code')
-        paths = {}
-        for name, group in grouped:
+        for module_code, group in df.groupby('Module_Code'):
             path_name = group['Course_Learning_Material'].iloc[0]
-            paths[path_name] = []
+            steps = []
             for _, row in group.iterrows():
-                paths[path_name].append({
+                steps.append({
+                    "step": row.name + 1,
                     "title": row['Module'],
                     "description": row['Course_Learning_Material'],
                     "duration": row['Duration'],
                     "difficulty": row['Difficulty_Level'],
-                    "url": row['Links'],
-                    "keywords": row['Keywords_Tags_Skills_Interests_Categories']
+                    "url": row['Links']
                 })
-        return paths
+            path_dict[path_name] = steps
+            
+        return path_dict
     except Exception as e:
         print(f"Error loading learning paths: {str(e)}")
         return {}
@@ -58,7 +57,6 @@ def build_course_data():
     all_courses = []
     for filename, platform in csv_files:
         try:
-            # Skip files that don't exist
             if not os.path.exists(filename):
                 print(f"Skipping missing file: {filename}")
                 continue
@@ -68,20 +66,6 @@ def build_course_data():
                 title = row.get('title') or row.get('course_title') or "Untitled Course"
                 description = row.get('description') or row.get('course_description') or row.get('subject') or "No description"
                 url = row.get('url') or row.get('link') or "#"
-                
-                # Generate URL if missing
-                if url == "#" or pd.isna(url):
-                    slug = re.sub(r'[^\w\s-]', '', title).strip().lower().replace(' ', '-')
-                    if platform == "Coursera":
-                        url = f"https://www.coursera.org/learn/{slug}"
-                    elif platform == "Udemy":
-                        url = f"https://www.udemy.com/course/{slug}/"
-                    elif platform == "edX":
-                        url = f"https://www.edx.org/course/{slug}"
-                
-                # Improve description if missing
-                if description in ["No description", "", None]:
-                    description = f"Comprehensive course on {title.split(':')[0]}"
                 
                 # Create course text
                 text = f"{title}: {description} | URL: {url} | Platform: {platform}"
@@ -95,10 +79,6 @@ def build_course_data():
                 })
         except Exception as e:
             print(f"Error loading {filename}: {str(e)}")
-    
-    if not all_courses:
-        # Use learning paths as fallback if no courses found
-        return []
     
     return all_courses
 
@@ -117,7 +97,6 @@ def initialize_system():
             print("No courses found. Using sample data.")
             sample_courses = [
                 {"title": "Python Fundamentals", "description": "Learn programming", "url": "#", "platform": "Sample", "text": "Python Fundamentals: Learn programming | URL: # | Platform: Sample"},
-                {"title": "Machine Learning", "description": "ML techniques", "url": "#", "platform": "Sample", "text": "Machine Learning: ML techniques | URL: # | Platform: Sample"},
             ]
             all_courses = sample_courses
         
@@ -131,23 +110,15 @@ def initialize_system():
         )
         vector_db.persist()
         
-        # Save combined courses to CSV
-        df = pd.DataFrame(all_courses)
-        df.to_csv(COMBINED_CSV, index=False)
-        
         print(f"Vector database built in {time.time()-start_time:.2f} seconds")
-        return vector_db, df
+        return vector_db, pd.DataFrame(all_courses)
     else:
         print("Loading precomputed vector database...")
         vector_db = Chroma(
             persist_directory=VECTOR_DB_DIR,
             embedding_function=embeddings
         )
-        if os.path.exists(COMBINED_CSV):
-            course_df = pd.read_csv(COMBINED_CSV)
-        else:
-            course_df = pd.DataFrame()
-        return vector_db, course_df
+        return vector_db, pd.DataFrame()
 
 # Initialize system
 vector_db, course_df = initialize_system()
@@ -178,21 +149,6 @@ def recommend_courses(query):
             match = re.match(r'^(.*?): (.*?) \| URL: (.*?) \| Platform: (.*)$', doc.page_content)
             if match:
                 title, reason, url, platform = match.groups()
-                
-                # Ensure URL is valid
-                if url in ["#", "", None]:
-                    slug = re.sub(r'[^\w\s-]', '', title).strip().lower().replace(' ', '-')
-                    if platform == "Coursera":
-                        url = f"https://www.coursera.org/learn/{slug}"
-                    elif platform == "Udemy":
-                        url = f"https://www.udemy.com/course/{slug}/"
-                    elif platform == "edX":
-                        url = f"https://www.edx.org/course/{slug}"
-                
-                # Improve reason if missing
-                if reason in ["No description", "", None]:
-                    reason = f"Comprehensive course on {title.split(':')[0]}"
-                
                 courses.append({
                     "title": title,
                     "reason": reason,
@@ -205,46 +161,28 @@ def recommend_courses(query):
     except Exception as e:
         return [{"error": f"System error: {str(e)}"}]
 
-def generate_learning_path(recommendations):
-    """Generate learning path for selected courses with robust validation"""
+def get_learning_path(course_name):
+    """Get learning path for a single course"""
     try:
-        if not recommendations or not recommendations.strip():
-            return {"error": "Please provide course names"}
+        # First check if course has a predefined path
+        for path_name, steps in learning_paths.items():
+            for step in steps:
+                if course_name.lower() in step['title'].lower():
+                    return {
+                        "course": course_name,
+                        "path_name": path_name,
+                        "steps": steps
+                    }
         
-        # Limit to 3 courses to avoid overwhelming the model
-        courses = [c.strip() for c in recommendations.split(",")][:3]
-        course_list = ", ".join(courses)
-        
-        # Enhanced prompt with JSON structure example
+        # If no predefined path, generate with LLM
         prompt = f"""
-        Create a detailed 3-month learning plan for these courses: {course_list}
-        Structure your response as a JSON object with these keys:
-        - "overview": (1-paragraph summary of the learning journey)
-        - "weekly_schedule": (list of 12 weekly plans with topics/resources)
-        - "projects": (list of 3 milestone projects)
-        - "skills_developed": (list of skills gained)
-        - "resources": (list of relevant resource URLs)
-        
-        Example valid JSON format:
-        {{
-          "overview": "This path teaches...",
-          "weekly_schedule": [
-            "Week 1: Topic A - Resource1, Resource2",
-            "Week 2: Topic B - Resource3"
-          ],
-          "projects": [
-            "Project 1: Description",
-            "Project 2: Description"
-          ],
-          "skills_developed": ["Skill1", "Skill2"],
-          "resources": ["https://resource1", "https://resource2"]
-        }}
-        
-        Important:
-        - Focus only on the provided courses
-        - Include practical projects
-        - Suggest real learning resources
-        - Maintain logical progression
+        Create a 3-month learning roadmap for: {course_name}
+        Structure as:
+        1. Prerequisites (1 month)
+        2. Core Learning (1 month)
+        3. Advanced Topics (1 month)
+        4. Practical Projects
+        Include weekly milestones and resource links.
         """
         
         qa = RetrievalQA.from_chain_type(
@@ -254,47 +192,23 @@ def generate_learning_path(recommendations):
         )
         
         result = qa.invoke({"query": prompt})
-        response = result["result"]
-        
-        # Attempt to extract JSON
-        try:
-            # Look for JSON code block
-            json_match = re.search(r'``````', response, re.DOTALL)
-            if json_match:
-                return json.loads(json_match.group(1))
-            
-            # Try parsing as raw JSON
-            return json.loads(response)
-        except:
-            # Fallback: Use predefined path if available
-            for path_name in learning_paths.keys():
-                if any(course.lower() in path_name.lower() for course in courses):
-                    return {
-                        "path_name": path_name,
-                        "steps": learning_paths[path_name],
-                        "note": "Custom path unavailable. Showing closest match."
-                    }
-            
-            # Final fallback: Error message
-            return {
-                "error": "Couldn't generate custom path",
-                "suggestion": "Try fewer courses or select a predefined path",
-                "raw_response": response[:500] + "..." if len(response) > 500 else response
-            }
+        return {
+            "course": course_name,
+            "roadmap": result["result"]
+        }
         
     except Exception as e:
         return {"error": f"Learning path generation failed: {str(e)}"}
 
-
 # Gradio interface
 with gr.Blocks(theme=gr.themes.Soft(), title="Course Learning Advisor") as demo:
-    gr.Markdown("# 🎓 Course Learning Advisor")
+    gr.Markdown("# 🎓 Course Learning Roadmap Generator")
     
     with gr.Row():
         with gr.Column():
             gr.Markdown("### Get Course Recommendations")
             background = gr.Textbox(
-                label="Your learning goals", 
+                label="What do you want to learn?", 
                 placeholder="e.g., 'Python for beginners' or 'Advanced machine learning'",
                 lines=2
             )
@@ -302,43 +216,26 @@ with gr.Blocks(theme=gr.themes.Soft(), title="Course Learning Advisor") as demo:
             rec_output = gr.JSON(label="Recommended Courses")
         
         with gr.Column():
-            gr.Markdown("### Create Learning Path")
-            gr.Markdown("**Predefined Paths**: Select from available learning paths")
-            
-            # Dropdown for learning paths
-            path_options = list(learning_paths.keys())
-            path_dropdown = gr.Dropdown(
-                choices=path_options,
-                label="Select a learning path",
-                interactive=True
+            gr.Markdown("### Get Learning Roadmap")
+            gr.Markdown("Enter a course name to get its learning path")
+            course_input = gr.Textbox(
+                label="Course name",
+                placeholder="e.g., Python Fundamentals"
             )
-            
-            gr.Markdown("**Custom Path**: Enter course names from recommendations")
-            path_input = gr.Textbox(
-                label="Courses (comma separated)",
-                placeholder="e.g., Python, Machine Learning"
-            )
-            path_btn = gr.Button("Generate Learning Path", variant="primary")
-            path_output = gr.JSON(label="Learning Plan")
+            path_btn = gr.Button("Generate Learning Roadmap", variant="primary")
+            path_output = gr.JSON(label="Learning Roadmap")
     
-    # Event handlers
     rec_btn.click(
         fn=recommend_courses,
         inputs=background,
         outputs=rec_output
     )
     
-    path_dropdown.change(
-        fn=lambda x: {"path_name": x, "steps": learning_paths.get(x, [])},
-        inputs=path_dropdown,
-        outputs=path_output
-    )
-    
     path_btn.click(
-        fn=generate_learning_path,
-        inputs=path_input,
+        fn=get_learning_path,
+        inputs=course_input,
         outputs=path_output
     )
 
 if __name__ == "__main__":
-    demo.launch(server_name="0.0.0.0", server_port=7860) 
+    demo.launch(server_name="0.0.0.0", server_port=7860)
