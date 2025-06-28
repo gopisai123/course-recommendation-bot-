@@ -8,6 +8,7 @@ from langchain_huggingface.embeddings import HuggingFaceEmbeddings
 from transformers import pipeline, AutoTokenizer
 from langchain_huggingface import HuggingFacePipeline
 from langchain.chains import RetrievalQA
+from difflib import get_close_matches  # Add to top of file
 
 # Initialize embedding model
 embeddings = HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
@@ -122,19 +123,26 @@ def recommend_courses(query):
 
 def generate_learning_path(recommendations):
     try:
-        if not recommendations or not recommendations.strip():
+        if not recommendations.strip():
             return {"error": "Please provide course names"}
         
         course_name = recommendations.split(",")[0].strip().lower()
         
-        # Check for predefined path
+        # 1. Exact match
         if course_name in learning_paths_dict:
-            return {
-                "course": course_name,
-                "path": learning_paths_dict[course_name]
-            }
+            return {"course": course_name, "path": learning_paths_dict[course_name]}
         
-        # Fallback to LLM
+        # 2. Remove extra words (e.g., "roadmap", "course")
+        base_name = re.sub(r'\b(roadmap|course|path|guide|tutorial|learning)\b', '', course_name).strip()
+        if base_name in learning_paths_dict:
+            return {"course": base_name, "path": learning_paths_dict[base_name]}
+        
+        # 3. Fuzzy match
+        matches = get_close_matches(base_name, learning_paths_dict.keys(), n=1, cutoff=0.7)
+        if matches:
+            return {"course": matches[0], "path": learning_paths_dict[matches[0]]}
+        
+        # 4. Fallback to LLM
         prompt = f"""
         Create a 3-month learning plan for: {course_name}
         Include:
@@ -143,15 +151,14 @@ def generate_learning_path(recommendations):
         - Skills to develop
         Format response as a structured JSON object
         """
-        
         qa = RetrievalQA.from_chain_type(
             llm=llm,
             chain_type="stuff",
             retriever=vector_db.as_retriever()
         )
-        
         result = qa.invoke({"query": prompt})
         return {"learning_path": result["result"]}
+        
     except Exception as e:
         return {"error": f"Learning path generation failed: {str(e)}"}
 
