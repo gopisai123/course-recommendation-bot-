@@ -3,6 +3,7 @@ import pandas as pd
 import re
 import os
 import json
+import time  # ADDED THIS IMPORT
 from langchain_community.vectorstores import Chroma
 from langchain_huggingface.embeddings import HuggingFaceEmbeddings
 from transformers import pipeline, AutoTokenizer
@@ -30,9 +31,9 @@ def load_learning_paths():
         for module_code, group in df.groupby('Module_Code'):
             path_name = group['Course_Learning_Material'].iloc[0]
             steps = []
-            for _, row in group.iterrows():
+            for i, (_, row) in enumerate(group.iterrows(), 1):
                 steps.append({
-                    "step": row.name + 1,
+                    "step": i,
                     "title": row['Module'],
                     "description": row['Course_Learning_Material'],
                     "duration": row['Duration'],
