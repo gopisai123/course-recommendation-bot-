@@ -6,6 +6,7 @@ from langchain_community.vectorstores import Chroma
 from langchain_huggingface.embeddings import HuggingFaceEmbeddings
 from transformers import pipeline, AutoTokenizer
 from langchain_huggingface import HuggingFacePipeline
+from langchain.chains import RetrievalQA  # ADDED THIS IMPORT
 
 # Initialize embedding model
 embeddings = HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
