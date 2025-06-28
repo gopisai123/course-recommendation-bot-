@@ -43,7 +43,16 @@ if os.path.exists(LEARNING_PATHS_CSV):
     )
 else:
     print(f"Warning: Learning paths file {LEARNING_PATHS_CSV} not found")
+    
     path_vector_db = None
+
+
+def get_best_description(row):
+    for key in ['description', 'course_description', 'subject']:
+        val = row.get(key)
+        if val and isinstance(val, str) and val.strip() and val.strip().lower() != 'no description':
+            return val.strip()
+    return "No description"
 
 def load_course_db():
     try:
@@ -62,7 +71,7 @@ def load_course_db():
                 df = pd.read_csv(filename)
                 for _, row in df.iterrows():
                     title = row.get('title') or row.get('course_title') or "Untitled Course"
-                    description = row.get('description') or row.get('course_description') or row.get('subject') or "No description"
+                    description = get_best_description(row)  # <--- use the helper here!
                     url = row.get('url') or row.get('link') or "#"
                     if url == "#" or pd.isna(url):
                         slug = re.sub(r'[^\w\s-]', '', title).strip().lower().replace(' ', '-')
@@ -94,6 +103,7 @@ def load_course_db():
         df = pd.DataFrame(sample_courses)
         texts = [f"{row['title']}: {row['description']} | URL: {row['url']} | Platform: {row['platform']}" for _, row in df.iterrows()]
         return Chroma.from_texts(texts, embeddings), df
+
 
 # Load course data
 vector_db, course_df = load_course_db()
