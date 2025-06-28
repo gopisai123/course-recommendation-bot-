@@ -1,6 +1,7 @@
 import gradio as gr
 import pandas as pd
 import re
+import os
 from langchain_community.vectorstores import Chroma
 from langchain_huggingface.embeddings import HuggingFaceEmbeddings
 from transformers import pipeline, AutoTokenizer
@@ -8,6 +9,24 @@ from langchain_huggingface import HuggingFacePipeline
 
 # Initialize embedding model
 embeddings = HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
+
+# Load learning paths from CSV
+LEARNING_PATHS_CSV = "top_100_courses_learning_paths.csv"
+learning_paths_dict = {}
+
+if os.path.exists(LEARNING_PATHS_CSV):
+    learning_paths_df = pd.read_csv(LEARNING_PATHS_CSV)
+    for _, row in learning_paths_df.iterrows():
+        # Create a dictionary entry for each course
+        learning_paths_dict[row['course_name'].lower()] = {
+            "overview": row['overview'],
+            "timeline": row['timeline'].split(';'),
+            "projects": row['projects'].split(';'),
+            "resources": row['resources'].split(';')
+        }
+    print(f"Loaded {len(learning_paths_dict)} learning paths from CSV")
+else:
+    print(f"Warning: Learning paths file {LEARNING_PATHS_CSV} not found")
 
 def load_course_db():
     try:
@@ -19,6 +38,11 @@ def load_course_db():
         all_courses = []
         for filename, platform in csv_files:
             try:
+                # Skip files that don't exist
+                if not os.path.exists(filename):
+                    print(f"Skipping missing file: {filename}")
+                    continue
+                    
                 df = pd.read_csv(filename)
                 df['platform'] = platform
                 for _, row in df.iterrows():
@@ -32,7 +56,7 @@ def load_course_db():
                             url = f"https://www.coursera.org/learn/{slug}"
                         elif platform == "Udemy":
                             url = f"https://www.udemy.com/course/{slug}/"
-                    plat = row['platform']
+                    plat = platform
                     text = f"{title}: {description} | URL: {url} | Platform: {plat}"
                     all_courses.append({
                         "title": title,
@@ -58,7 +82,6 @@ def load_course_db():
         texts = [f"{row['title']}: {row['description']} | URL: {row['url']} | Platform: {row['platform']}" for _, row in df.iterrows()]
         return Chroma.from_texts(texts, embeddings), df
 
-
 # Load course data
 vector_db, course_df = load_course_db()
 
@@ -80,7 +103,7 @@ def recommend_courses(query):
         retrieved = vector_db.similarity_search(query, k=3)
         courses = []
         for doc in retrieved:
-            # Updated regex to capture platform
+            # Parse course info
             match = re.match(r'^(.*?): (.*?) \| URL: (.*?) \| Platform: (.*)$', doc.page_content)
             if match:
                 courses.append({
@@ -97,46 +120,61 @@ def generate_learning_path(recommendations):
     try:
         if not recommendations or not recommendations.strip():
             return {"error": "Please provide course names"}
+        
+        # For simplicity, use the first course in the list
+        course_name = recommendations.split(",")[0].strip()
+        
+        # Check if we have a predefined path for this course
+        course_key = course_name.lower()
+        if learning_paths_dict and course_key in learning_paths_dict:
+            return {
+                "course": course_name,
+                "path": learning_paths_dict[course_key]
+            }
+        
+        # Fallback to LLM generation if not found in CSV
         prompt = f"""
-        Create a 3-month learning plan for these courses: {recommendations}
+        Create a 3-month learning plan for: {course_name}
         Include:
         - Weekly milestones
         - Project suggestions
         - Skills to develop
         Format response as a structured JSON object
         """
+        
         qa = RetrievalQA.from_chain_type(
             llm=llm,
             chain_type="stuff",
             retriever=vector_db.as_retriever()
         )
+        
         result = qa.invoke({"query": prompt})
         return {"learning_path": result["result"]}
     except Exception as e:
         return {"error": f"Learning path generation failed: {str(e)}"}
 
 # Gradio interface
-with gr.Blocks(theme=gr.themes.Soft(), title="Multi-Platform Course Bot") as demo:
-    gr.Markdown("# 🎓 Multi-Platform Course Recommender")
+with gr.Blocks(theme=gr.themes.Soft(), title="Course Learning Advisor") as demo:
+    gr.Markdown("# 🎓 Course Learning Advisor")
     with gr.Row():
         with gr.Column():
             gr.Markdown("### Get Course Recommendations")
             background = gr.Textbox(
-                label="Your background/goals", 
-                placeholder="e.g., 'CS student interested in AI'",
+                label="Your learning goals", 
+                placeholder="e.g., 'Python for beginners' or 'Data Science'",
                 lines=2
             )
             rec_btn = gr.Button("Get Recommendations", variant="primary")
             rec_output = gr.JSON(label="Recommended Courses")
         with gr.Column():
-            gr.Markdown("### Create Learning Path")
-            gr.Markdown("Enter course names from recommendations")
+            gr.Markdown("### Get Learning Roadmap")
+            gr.Markdown("Enter a course name from recommendations")
             path_input = gr.Textbox(
-                label="Courses (comma separated)",
-                placeholder="e.g., Python, Machine Learning"
+                label="Course name",
+                placeholder="e.g., Python Fundamentals"
             )
             path_btn = gr.Button("Generate Learning Path", variant="primary")
-            path_output = gr.JSON(label="Personalized Plan")
+            path_output = gr.JSON(label="Learning Roadmap")
     rec_btn.click(
         fn=recommend_courses,
         inputs=background,
