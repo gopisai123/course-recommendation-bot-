@@ -2,11 +2,12 @@ import gradio as gr
 import pandas as pd
 import re
 import os
+import numpy as np
 from langchain_community.vectorstores import Chroma
 from langchain_huggingface.embeddings import HuggingFaceEmbeddings
 from transformers import pipeline, AutoTokenizer
 from langchain_huggingface import HuggingFacePipeline
-from langchain.chains import RetrievalQA  # ADDED THIS IMPORT
+from langchain.chains import RetrievalQA
 
 # Initialize embedding model
 embeddings = HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
@@ -15,15 +16,21 @@ embeddings = HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-
 LEARNING_PATHS_CSV = "top_100_courses_learning_paths.csv"
 learning_paths_dict = {}
 
+def safe_split(value, delimiter=';'):
+    """Safely split values handling NaN and empty cases"""
+    if pd.isna(value) or value == "":
+        return []
+    return [v.strip() for v in str(value).split(delimiter) if v.strip()]
+
 if os.path.exists(LEARNING_PATHS_CSV):
     learning_paths_df = pd.read_csv(LEARNING_PATHS_CSV)
     for _, row in learning_paths_df.iterrows():
-        # Create a dictionary entry for each course
+        # Handle missing values safely
         learning_paths_dict[row['course_name'].lower()] = {
-            "overview": row['overview'],
-            "timeline": row['timeline'].split(';'),
-            "projects": row['projects'].split(';'),
-            "resources": row['resources'].split(';')
+            "overview": row.get('overview', ''),
+            "timeline": safe_split(row.get('timeline')),
+            "projects": safe_split(row.get('projects')),
+            "resources": safe_split(row.get('resources'))
         }
     print(f"Loaded {len(learning_paths_dict)} learning paths from CSV")
 else:
@@ -39,7 +46,6 @@ def load_course_db():
         all_courses = []
         for filename, platform in csv_files:
             try:
-                # Skip files that don't exist
                 if not os.path.exists(filename):
                     print(f"Skipping missing file: {filename}")
                     continue
@@ -50,7 +56,6 @@ def load_course_db():
                     title = row.get('title') or row.get('course_title') or "Untitled Course"
                     description = row.get('description') or row.get('course_description') or row.get('subject') or "No description"
                     url = row.get('url') or row.get('link') or "#"
-                    # Generate URL if missing
                     if url == "#" or pd.isna(url):
                         slug = re.sub(r'[^\w\s-]', '', title).strip().lower().replace(' ', '-')
                         if platform == "Coursera":
@@ -100,11 +105,9 @@ llm = HuggingFacePipeline(pipeline=generator)
 
 def recommend_courses(query):
     try:
-        # Retrieve top 3 relevant courses
         retrieved = vector_db.similarity_search(query, k=3)
         courses = []
         for doc in retrieved:
-            # Parse course info
             match = re.match(r'^(.*?): (.*?) \| URL: (.*?) \| Platform: (.*)$', doc.page_content)
             if match:
                 courses.append({
@@ -122,18 +125,16 @@ def generate_learning_path(recommendations):
         if not recommendations or not recommendations.strip():
             return {"error": "Please provide course names"}
         
-        # For simplicity, use the first course in the list
-        course_name = recommendations.split(",")[0].strip()
+        course_name = recommendations.split(",")[0].strip().lower()
         
-        # Check if we have a predefined path for this course
-        course_key = course_name.lower()
-        if learning_paths_dict and course_key in learning_paths_dict:
+        # Check for predefined path
+        if course_name in learning_paths_dict:
             return {
                 "course": course_name,
-                "path": learning_paths_dict[course_key]
+                "path": learning_paths_dict[course_name]
             }
         
-        # Fallback to LLM generation if not found in CSV
+        # Fallback to LLM
         prompt = f"""
         Create a 3-month learning plan for: {course_name}
         Include:
@@ -169,7 +170,6 @@ with gr.Blocks(theme=gr.themes.Soft(), title="Course Learning Advisor") as demo:
             rec_output = gr.JSON(label="Recommended Courses")
         with gr.Column():
             gr.Markdown("### Get Learning Roadmap")
-            gr.Markdown("Enter a course name from recommendations")
             path_input = gr.Textbox(
                 label="Course name",
                 placeholder="e.g., Python Fundamentals"
