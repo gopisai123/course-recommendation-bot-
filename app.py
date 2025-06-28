@@ -3,13 +3,11 @@ import pandas as pd
 import re
 import os
 import difflib
-import numpy as np
 from langchain_community.vectorstores import Chroma
 from langchain_huggingface.embeddings import HuggingFaceEmbeddings
 from transformers import pipeline, AutoTokenizer
 from langchain_huggingface import HuggingFacePipeline
 from langchain.chains import RetrievalQA
-from difflib import get_close_matches  # Add to top of file
 
 # Initialize embedding model
 embeddings = HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
@@ -17,6 +15,7 @@ embeddings = HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-
 # Load learning paths from CSV
 LEARNING_PATHS_CSV = "top_100_courses_learning_paths.csv"
 learning_paths_dict = {}
+learning_path_names = []
 
 def safe_split(value, delimiter=';'):
     """Safely split values handling NaN and empty cases"""
@@ -27,16 +26,24 @@ def safe_split(value, delimiter=';'):
 if os.path.exists(LEARNING_PATHS_CSV):
     learning_paths_df = pd.read_csv(LEARNING_PATHS_CSV)
     for _, row in learning_paths_df.iterrows():
-        # Handle missing values safely
-        learning_paths_dict[row['course_name'].lower()] = {
+        course_name = row['course_name'].strip().lower()
+        learning_paths_dict[course_name] = {
             "overview": row.get('overview', ''),
             "timeline": safe_split(row.get('timeline')),
             "projects": safe_split(row.get('projects')),
             "resources": safe_split(row.get('resources'))
         }
+        learning_path_names.append(course_name)
     print(f"Loaded {len(learning_paths_dict)} learning paths from CSV")
+    
+    # Create vector store for path names
+    path_vector_db = Chroma.from_texts(
+        texts=learning_path_names,
+        embedding=embeddings
+    )
 else:
     print(f"Warning: Learning paths file {LEARNING_PATHS_CSV} not found")
+    path_vector_db = None
 
 def load_course_db():
     try:
@@ -53,7 +60,6 @@ def load_course_db():
                     continue
                     
                 df = pd.read_csv(filename)
-                df['platform'] = platform
                 for _, row in df.iterrows():
                     title = row.get('title') or row.get('course_title') or "Untitled Course"
                     description = row.get('description') or row.get('course_description') or row.get('subject') or "No description"
@@ -64,13 +70,12 @@ def load_course_db():
                             url = f"https://www.coursera.org/learn/{slug}"
                         elif platform == "Udemy":
                             url = f"https://www.udemy.com/course/{slug}/"
-                    plat = platform
-                    text = f"{title}: {description} | URL: {url} | Platform: {plat}"
+                    text = f"{title}: {description} | URL: {url} | Platform: {platform}"
                     all_courses.append({
                         "title": title,
                         "description": description,
                         "url": url,
-                        "platform": plat,
+                        "platform": platform,
                         "text": text
                     })
             except Exception as e:
@@ -124,26 +129,38 @@ def recommend_courses(query):
 
 def generate_learning_path(recommendations):
     try:
-        if not recommendations or not recommendations.strip():
+        if not recommendations.strip():
             return {"error": "Please provide course names"}
         
         course_name = recommendations.split(",")[0].strip().lower()
         
-        # 1. Exact match
-        if course_name in learning_paths_dict:
-            return {"course": course_name, "path": learning_paths_dict[course_name]}
+        # 1. Semantic search in learning paths
+        if path_vector_db:
+            results = path_vector_db.similarity_search(course_name, k=1)
+            if results:
+                matched_path = results[0].page_content
+                if matched_path in learning_paths_dict:
+                    return {
+                        "course": course_name,
+                        "matched_path": matched_path,
+                        "path": learning_paths_dict[matched_path]
+                    }
         
-        # 2. Remove common keywords
-        clean_name = re.sub(r'\b(roadmap|course|path|guide|tutorial|learning)\b', '', course_name).strip()
-        if clean_name in learning_paths_dict:
-            return {"course": clean_name, "path": learning_paths_dict[clean_name]}
-        
-        # 3. Fuzzy match
-        matches = difflib.get_close_matches(clean_name, learning_paths_dict.keys(), n=1, cutoff=0.7)
+        # 2. Fuzzy match
+        matches = difflib.get_close_matches(
+            course_name, 
+            learning_paths_dict.keys(), 
+            n=1, 
+            cutoff=0.6
+        )
         if matches:
-            return {"course": matches[0], "path": learning_paths_dict[matches[0]]}
+            return {
+                "course": course_name,
+                "matched_path": matches[0],
+                "path": learning_paths_dict[matches[0]]
+            }
         
-        # 4. Fallback to LLM
+        # 3. Fallback to LLM
         prompt = f"""
         Create a 3-month learning plan for: {course_name}
         Include:
@@ -163,7 +180,6 @@ def generate_learning_path(recommendations):
         return {"learning_path": result["result"]}
     except Exception as e:
         return {"error": f"Learning path generation failed: {str(e)}"}
-
 
 # Gradio interface
 with gr.Blocks(theme=gr.themes.Soft(), title="Course Learning Advisor") as demo:
