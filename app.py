@@ -121,17 +121,41 @@ def recommend_courses(query):
                 title = match.group(1)
                 reason = match.group(2)
                 url = match.group(3)
-                platform = match.group(4)
-                # Markdown link
-                lines.append(f"**{title}** ({platform})  \n{reason}  \n[Go to course]({url})\n")
+                # Show the actual link (clickable in Markdown)
+                lines.append(
+                    f"### {title}\n"
+                    f"{reason}\n"
+                    f"[{url}]({url})\n"
+                )
         return "\n---\n".join(lines)
     except Exception as e:
         return f"System error: {str(e)}"
 
+def format_learning_path(path_dict):
+    """Format the learning path dictionary as Markdown."""
+    if not path_dict:
+        return "No learning path found."
+    lines = []
+    if path_dict.get("overview"):
+        lines.append(f"**Overview:** {path_dict['overview']}\n")
+    if path_dict.get("timeline"):
+        lines.append("**Timeline:**")
+        for week in path_dict["timeline"]:
+            lines.append(f"- {week}")
+    if path_dict.get("projects"):
+        lines.append("**Projects:**")
+        for proj in path_dict["projects"]:
+            lines.append(f"- {proj}")
+    if path_dict.get("resources"):
+        lines.append("**Resources:**")
+        for res in path_dict["resources"]:
+            lines.append(f"- [{res}]({res})" if res.startswith("http") else f"- {res}")
+    return "\n".join(lines)
+
 def generate_learning_path(recommendations):
     try:
         if not recommendations.strip():
-            return {"error": "Please provide course names"}
+            return "Please provide course names"
         course_name = recommendations.split(",")[0].strip().lower()
         # 1. Semantic search in learning paths
         if path_vector_db:
@@ -139,11 +163,7 @@ def generate_learning_path(recommendations):
             if results:
                 matched_path = results[0].page_content
                 if matched_path in learning_paths_dict:
-                    return {
-                        "course": course_name,
-                        "matched_path": matched_path,
-                        "path": learning_paths_dict[matched_path]
-                    }
+                    return format_learning_path(learning_paths_dict[matched_path])
         # 2. Fuzzy match
         matches = difflib.get_close_matches(
             course_name, 
@@ -152,11 +172,7 @@ def generate_learning_path(recommendations):
             cutoff=0.6
         )
         if matches:
-            return {
-                "course": course_name,
-                "matched_path": matches[0],
-                "path": learning_paths_dict[matches[0]]
-            }
+            return format_learning_path(learning_paths_dict[matches[0]])
         # 3. Fallback to LLM
         prompt = f"""
         Create a 3-month learning plan for: {course_name}
@@ -164,7 +180,7 @@ def generate_learning_path(recommendations):
         - Weekly milestones
         - Project suggestions
         - Skills to develop
-        Format response as a structured JSON object
+        Format response as a structured Markdown list
         """
         qa = RetrievalQA.from_chain_type(
             llm=llm,
@@ -172,31 +188,33 @@ def generate_learning_path(recommendations):
             retriever=vector_db.as_retriever()
         )
         result = qa.invoke({"query": prompt})
-        return {"learning_path": result["result"]}
+        return result["result"]
     except Exception as e:
-        return {"error": f"Learning path generation failed: {str(e)}"}
+        return f"Learning path generation failed: {str(e)}"
 
 # Gradio interface
 with gr.Blocks(theme=gr.themes.Soft(), title="Course Learning Advisor") as demo:
-    gr.Markdown("# 🎓 Course Learning Advisor (edX Only)")
+    gr.Markdown(
+        "<h1 style='text-align: center;'>🎓 Course Learning Advisor</h1>"
+    )
     with gr.Row():
         with gr.Column():
-            gr.Markdown("### Get edX Course Recommendations")
+            gr.Markdown("#### Course Recommendations")
             background = gr.Textbox(
-                label="Your learning goals", 
-                placeholder="e.g., 'Python for beginners' or 'Data Science'",
+                label="What do you want to learn?",
+                placeholder="e.g., Python for beginners, Data Science, Machine Learning",
                 lines=2
             )
             rec_btn = gr.Button("Get Recommendations", variant="primary")
             rec_output = gr.Markdown(label="Recommended Courses")
         with gr.Column():
-            gr.Markdown("### Get Learning Roadmap")
+            gr.Markdown("#### Personalized Learning Path")
             path_input = gr.Textbox(
-                label="Course name",
+                label="Enter a course or topic",
                 placeholder="e.g., Python Fundamentals"
             )
             path_btn = gr.Button("Generate Learning Path", variant="primary")
-            path_output = gr.JSON(label="Learning Roadmap")
+            path_output = gr.Markdown(label="Learning Roadmap")
     rec_btn.click(
         fn=recommend_courses,
         inputs=background,
