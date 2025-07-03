@@ -147,7 +147,7 @@ def format_learning_path(path_dict):
         for proj in path_dict["projects"]:
             lines.append(f"- {proj}")
     if path_dict.get("resources"):
-        lines.append("**Resources:**")
+        lines.append("\n**Resources:**")
         for res in path_dict["resources"]:
             lines.append(f"- [{res}]({res})" if res.startswith("http") else f"- {res}")
     return "\n".join(lines)
