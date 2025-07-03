@@ -52,7 +52,7 @@ def get_best_description(row):
 def load_course_db():
     try:
         csv_files = [
-            ("edx_courses.csv", "edX")
+            ("courses.csv", "edX")
         ]
         all_courses = []
         for filename, platform in csv_files:
@@ -60,7 +60,7 @@ def load_course_db():
                 if not os.path.exists(filename):
                     print(f"Skipping missing file: {filename}")
                     continue
-                    
+
                 df = pd.read_csv(filename)
                 for _, row in df.iterrows():
                     title = row.get('title') or row.get('course_title') or "Untitled Course"
@@ -93,6 +93,7 @@ def load_course_db():
         df = pd.DataFrame(sample_courses)
         texts = [f"{row['title']}: {row['description']} | URL: {row['url']} | Platform: {row['platform']}" for _, row in df.iterrows()]
         return Chroma.from_texts(texts, embeddings), df
+
 
 # Load course data
 vector_db, course_df = load_course_db()
