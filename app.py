@@ -94,7 +94,6 @@ def load_course_db():
         texts = [f"{row['title']}: {row['description']} | URL: {row['url']} | Platform: {row['platform']}" for _, row in df.iterrows()]
         return Chroma.from_texts(texts, embeddings), df
 
-
 # Load course data
 vector_db, course_df = load_course_db()
 
@@ -113,7 +112,9 @@ llm = HuggingFacePipeline(pipeline=generator)
 def recommend_courses(query):
     try:
         retrieved = vector_db.similarity_search(query, k=3)
-        courses = []
+        if not retrieved:
+            return "No courses found."
+        lines = []
         for doc in retrieved:
             match = re.match(r'^(.*?): (.*?) \| URL: (.*?) \| Platform: (.*)$', doc.page_content)
             if match:
@@ -121,18 +122,11 @@ def recommend_courses(query):
                 reason = match.group(2)
                 url = match.group(3)
                 platform = match.group(4)
-                # Format the URL as a Markdown link
-                url_md = f"[Go to course]({url})"
-                courses.append({
-                    "title": title,
-                    "reason": reason,
-                    "url": url_md,
-                    "platform": platform
-                })
-        return courses if courses else [{"error": "No courses found"}]
+                # Markdown link
+                lines.append(f"**{title}** ({platform})  \n{reason}  \n[Go to course]({url})\n")
+        return "\n---\n".join(lines)
     except Exception as e:
-        return [{"error": f"System error: {str(e)}"}]
-
+        return f"System error: {str(e)}"
 
 def generate_learning_path(recommendations):
     try:
@@ -194,7 +188,7 @@ with gr.Blocks(theme=gr.themes.Soft(), title="Course Learning Advisor") as demo:
                 lines=2
             )
             rec_btn = gr.Button("Get Recommendations", variant="primary")
-            rec_output = gr.JSON(label="Recommended Courses")
+            rec_output = gr.Markdown(label="Recommended Courses")
         with gr.Column():
             gr.Markdown("### Get Learning Roadmap")
             path_input = gr.Textbox(
