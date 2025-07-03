@@ -202,7 +202,7 @@ with gr.Blocks(theme=gr.themes.Soft(), title="Course Learning Advisor") as demo:
             gr.Markdown("#### Course Recommendations")
             background = gr.Textbox(
                 label="What do you want to learn?",
-                placeholder="e.g., Python for beginners, Data Science, Machine Learning",
+                placeholder="e.g., Data Science, Machine Learning",
                 lines=2
             )
             rec_btn = gr.Button("Get Recommendations", variant="primary")
