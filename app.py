@@ -18,7 +18,6 @@ learning_paths_dict = {}
 learning_path_names = []
 
 def safe_split(value, delimiter=';'):
-    """Safely split values handling NaN and empty cases"""
     if pd.isna(value) or value == "":
         return []
     return [v.strip() for v in str(value).split(delimiter) if v.strip()]
@@ -35,17 +34,13 @@ if os.path.exists(LEARNING_PATHS_CSV):
         }
         learning_path_names.append(course_name)
     print(f"Loaded {len(learning_paths_dict)} learning paths from CSV")
-    
-    # Create vector store for path names
     path_vector_db = Chroma.from_texts(
         texts=learning_path_names,
         embedding=embeddings
     )
 else:
     print(f"Warning: Learning paths file {LEARNING_PATHS_CSV} not found")
-    
     path_vector_db = None
-
 
 def get_best_description(row):
     for key in ['description', 'course_description', 'subject']:
@@ -57,9 +52,7 @@ def get_best_description(row):
 def load_course_db():
     try:
         csv_files = [
-            ("edx_courses.csv", "edX"),
-            ("coursera_data.csv", "Coursera"),
-            ("udemy_courses.csv", "Udemy")
+            ("edx_courses.csv", "edX")
         ]
         all_courses = []
         for filename, platform in csv_files:
@@ -71,14 +64,11 @@ def load_course_db():
                 df = pd.read_csv(filename)
                 for _, row in df.iterrows():
                     title = row.get('title') or row.get('course_title') or "Untitled Course"
-                    description = get_best_description(row)  # <--- use the helper here!
+                    description = get_best_description(row)
                     url = row.get('url') or row.get('link') or "#"
-                    if url == "#" or pd.isna(url):
+                    if url == "#" or pd.isna(url) or not str(url).startswith("http"):
                         slug = re.sub(r'[^\w\s-]', '', title).strip().lower().replace(' ', '-')
-                        if platform == "Coursera":
-                            url = f"https://www.coursera.org/learn/{slug}"
-                        elif platform == "Udemy":
-                            url = f"https://www.udemy.com/course/{slug}/"
+                        url = f"https://www.edx.org/course/{slug}" if slug else "#"
                     text = f"{title}: {description} | URL: {url} | Platform: {platform}"
                     all_courses.append({
                         "title": title,
@@ -103,7 +93,6 @@ def load_course_db():
         df = pd.DataFrame(sample_courses)
         texts = [f"{row['title']}: {row['description']} | URL: {row['url']} | Platform: {row['platform']}" for _, row in df.iterrows()]
         return Chroma.from_texts(texts, embeddings), df
-
 
 # Load course data
 vector_db, course_df = load_course_db()
@@ -141,9 +130,7 @@ def generate_learning_path(recommendations):
     try:
         if not recommendations.strip():
             return {"error": "Please provide course names"}
-        
         course_name = recommendations.split(",")[0].strip().lower()
-        
         # 1. Semantic search in learning paths
         if path_vector_db:
             results = path_vector_db.similarity_search(course_name, k=1)
@@ -155,7 +142,6 @@ def generate_learning_path(recommendations):
                         "matched_path": matched_path,
                         "path": learning_paths_dict[matched_path]
                     }
-        
         # 2. Fuzzy match
         matches = difflib.get_close_matches(
             course_name, 
@@ -169,7 +155,6 @@ def generate_learning_path(recommendations):
                 "matched_path": matches[0],
                 "path": learning_paths_dict[matches[0]]
             }
-        
         # 3. Fallback to LLM
         prompt = f"""
         Create a 3-month learning plan for: {course_name}
@@ -179,13 +164,11 @@ def generate_learning_path(recommendations):
         - Skills to develop
         Format response as a structured JSON object
         """
-        
         qa = RetrievalQA.from_chain_type(
             llm=llm,
             chain_type="stuff",
             retriever=vector_db.as_retriever()
         )
-        
         result = qa.invoke({"query": prompt})
         return {"learning_path": result["result"]}
     except Exception as e:
@@ -193,10 +176,10 @@ def generate_learning_path(recommendations):
 
 # Gradio interface
 with gr.Blocks(theme=gr.themes.Soft(), title="Course Learning Advisor") as demo:
-    gr.Markdown("# 🎓 Course Learning Advisor")
+    gr.Markdown("# 🎓 Course Learning Advisor (edX Only)")
     with gr.Row():
         with gr.Column():
-            gr.Markdown("### Get Course Recommendations")
+            gr.Markdown("### Get edX Course Recommendations")
             background = gr.Textbox(
                 label="Your learning goals", 
                 placeholder="e.g., 'Python for beginners' or 'Data Science'",
