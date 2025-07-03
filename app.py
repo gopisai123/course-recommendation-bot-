@@ -117,15 +117,22 @@ def recommend_courses(query):
         for doc in retrieved:
             match = re.match(r'^(.*?): (.*?) \| URL: (.*?) \| Platform: (.*)$', doc.page_content)
             if match:
+                title = match.group(1)
+                reason = match.group(2)
+                url = match.group(3)
+                platform = match.group(4)
+                # Format the URL as a Markdown link
+                url_md = f"[Go to course]({url})"
                 courses.append({
-                    "title": match.group(1),
-                    "reason": match.group(2),
-                    "url": match.group(3),
-                    "platform": match.group(4)
+                    "title": title,
+                    "reason": reason,
+                    "url": url_md,
+                    "platform": platform
                 })
         return courses if courses else [{"error": "No courses found"}]
     except Exception as e:
         return [{"error": f"System error: {str(e)}"}]
+
 
 def generate_learning_path(recommendations):
     try:
