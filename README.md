@@ -32,10 +32,3 @@ Try it online: [Course Recommendation Bot](https://huggingface.co/spaces/GopiSai
 
 ---
 
-## How to Run Locally
-
-```bash
-git clone https://github.com/YOUR_USERNAME/REPO_NAME.git
-cd REPO_NAME
-pip install -r requirements.txt
-python main.py
