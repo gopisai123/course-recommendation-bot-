@@ -13,7 +13,7 @@ Try it online: [Course Recommendation Bot](https://huggingface.co/spaces/GopiSai
 
 ## Project Overview
 
-- Loads course data from CSV files (`courses.csv` and `top_100_courses_learning_paths.csv`).  
+- Loads course data from CSV files.  
 - Uses **semantic search** with Hugging Face embeddings to recommend courses.  
 - Generates **personalized learning paths** using:
   - Structured CSV data  
